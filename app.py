@@ -259,6 +259,100 @@ def link_whatsapp(telefone: str, mensagem: str) -> str:
     return f"https://wa.me/{digitos}?text={quote(mensagem)}"
 
 
+def gerar_pdf_fechamento(periodo_txt, por_forma, total_receb, por_produto,
+                         total_consumo, pagantes, total_pago, a_receber, total_receber):
+    """Monta o PDF do fechamento com as 4 visões em uma página."""
+    from io import BytesIO
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.units import mm
+    from reportlab.lib import colors
+    from reportlab.platypus import (SimpleDocTemplate, Table, TableStyle, Paragraph,
+                                    Spacer, Image as RLImage)
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+
+    AZUL_RL = colors.HexColor("#0B3D91")
+    MAGENTA_RL = colors.HexColor("#E6007E")
+    AZUL_CLARO_RL = colors.HexColor("#EEF3FB")
+
+    def moeda(v):
+        return f"R$ {v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+    buf = BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=A4,
+                            leftMargin=15 * mm, rightMargin=15 * mm,
+                            topMargin=12 * mm, bottomMargin=12 * mm)
+    styles = getSampleStyleSheet()
+    titulo = ParagraphStyle("titulo", parent=styles["Title"], textColor=AZUL_RL, fontSize=16)
+    sub = ParagraphStyle("sub", parent=styles["Normal"], textColor=colors.grey, fontSize=9)
+    sec = ParagraphStyle("sec", parent=styles["Heading3"], textColor=MAGENTA_RL, fontSize=11, spaceBefore=8)
+
+    elems = []
+    # cabeçalho (logo se existir)
+    if TEM_LOGO:
+        try:
+            cab = Table([[RLImage(LOGO, width=18 * mm, height=18 * mm),
+                          Paragraph("Fechamento — Lanchonete da Igreja", titulo)]],
+                        colWidths=[22 * mm, None])
+            cab.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE")]))
+            elems.append(cab)
+        except Exception:
+            elems.append(Paragraph("Fechamento — Lanchonete da Igreja", titulo))
+    else:
+        elems.append(Paragraph("Fechamento — Lanchonete da Igreja", titulo))
+    elems.append(Paragraph(periodo_txt, sub))
+    elems.append(Spacer(1, 6))
+
+    def tabela(dados, larguras):
+        t = Table(dados, colWidths=larguras, repeatRows=1)
+        t.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), AZUL_RL),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, -1), 9),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, AZUL_CLARO_RL]),
+            ("ALIGN", (1, 0), (-1, -1), "RIGHT"),
+            ("ALIGN", (0, 0), (0, -1), "LEFT"),
+            ("GRID", (0, 0), (-1, -1), 0.4, colors.lightgrey),
+            ("TOPPADDING", (0, 0), (-1, -1), 3),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+        ]))
+        return t
+
+    # 1) Forma de pagamento
+    elems.append(Paragraph("Recebido por forma de pagamento", sec))
+    linhas = [["Forma", "Recebido"]] + [[f, moeda(v)] for f, v in por_forma]
+    linhas.append(["TOTAL", moeda(total_receb)])
+    elems.append(tabela(linhas, [None, 40 * mm]))
+
+    # 2) Consumo por produto
+    elems.append(Paragraph("Consumo por produto", sec))
+    linhas = [["Produto", "Qtde", "Total"]] + [[p, str(int(q)), moeda(v)] for p, q, v in por_produto]
+    linhas.append(["TOTAL", "", moeda(total_consumo)])
+    elems.append(tabela(linhas, [None, 25 * mm, 35 * mm]))
+
+    # 3) Clientes que pagaram
+    elems.append(Paragraph("Clientes que pagaram", sec))
+    if pagantes:
+        linhas = [["Cliente", "Pago"]] + [[c, moeda(v)] for c, v in pagantes]
+        linhas.append(["TOTAL", moeda(total_pago)])
+    else:
+        linhas = [["Cliente", "Pago"], ["(nenhum recebimento)", "-"]]
+    elems.append(tabela(linhas, [None, 40 * mm]))
+
+    # 4) A receber por cliente
+    elems.append(Paragraph("A receber por cliente", sec))
+    if a_receber:
+        linhas = [["Cliente", "Deve"]] + [[c, moeda(v)] for c, v in a_receber]
+        linhas.append(["TOTAL", moeda(total_receber)])
+    else:
+        linhas = [["Cliente", "Deve"], ["(nada em aberto)", "-"]]
+    elems.append(tabela(linhas, [None, 40 * mm]))
+
+    doc.build(elems)
+    buf.seek(0)
+    return buf.getvalue()
+
+
 # ------------------------------------------------------------
 # Navegação (menu conforme o perfil)
 # ------------------------------------------------------------
@@ -1014,13 +1108,18 @@ elif pagina == "📋 Extrato":
             with st.expander("📑 Fechamento do período (resumos)"):
                 fmt = fmt_moeda
 
+                # 1) Recebido por forma de pagamento
                 st.markdown("**💳 Recebido por forma de pagamento**")
                 recebidos = df_validos.loc[df_validos["valor_pago"] > 0.001].copy()
+                total_receb = 0.0
+                por_forma_pdf = []
                 if recebidos.empty or "forma_pagamento" not in recebidos.columns:
                     st.caption("Nenhum recebimento registrado no período.")
                 else:
                     recebidos["forma_pagamento"] = recebidos["forma_pagamento"].fillna("(não informado)")
                     por_forma = recebidos.groupby("forma_pagamento", as_index=False)["valor_pago"].sum()
+                    total_receb = recebidos["valor_pago"].sum()
+                    por_forma_pdf = list(por_forma.itertuples(index=False, name=None))
                     st.dataframe(
                         por_forma, hide_index=True, use_container_width=True,
                         column_config={
@@ -1028,13 +1127,16 @@ elif pagina == "📋 Extrato":
                             "valor_pago": st.column_config.NumberColumn("Recebido", format="R$ %.2f"),
                         },
                     )
-                    st.caption(f"Total recebido: **{fmt(recebidos['valor_pago'].sum())}**")
+                    st.caption(f"Total recebido: **{fmt(total_receb)}**")
 
+                # 2) Consumo por produto
                 st.divider()
                 st.markdown("**🍔 Consumo por produto**")
                 por_produto = df_validos.groupby("produto", as_index=False).agg(
                     qtde=("quantidade", "sum"), total=("total", "sum")
                 ).sort_values("total", ascending=False)
+                total_consumo = df_validos["total"].sum()
+                por_produto_pdf = list(por_produto.itertuples(index=False, name=None))
                 st.dataframe(
                     por_produto, hide_index=True, use_container_width=True,
                     column_config={
@@ -1043,15 +1145,40 @@ elif pagina == "📋 Extrato":
                         "total": st.column_config.NumberColumn("Total", format="R$ %.2f"),
                     },
                 )
-                st.caption(f"Total do consumo: **{fmt(df_validos['total'].sum())}**")
+                st.caption(f"Total do consumo: **{fmt(total_consumo)}**")
 
+                # 3) Clientes que pagaram (total ou parcial)
                 st.divider()
-                st.markdown("**👥 A receber por cliente (em aberto)**")
+                st.markdown("**✅ Clientes que pagaram**")
+                pagantes = (
+                    df_validos.loc[df_validos["valor_pago"] > 0.001]
+                    .groupby("cliente", as_index=False)["valor_pago"].sum()
+                    .sort_values("valor_pago", ascending=False)
+                )
+                total_pago = pagantes["valor_pago"].sum() if not pagantes.empty else 0.0
+                pagantes_pdf = list(pagantes.itertuples(index=False, name=None)) if not pagantes.empty else []
+                if pagantes.empty:
+                    st.caption("Nenhum recebimento no período.")
+                else:
+                    st.dataframe(
+                        pagantes, hide_index=True, use_container_width=True,
+                        column_config={
+                            "cliente": st.column_config.TextColumn("Cliente"),
+                            "valor_pago": st.column_config.NumberColumn("Pago", format="R$ %.2f"),
+                        },
+                    )
+                    st.caption(f"Total pago: **{fmt(total_pago)}**")
+
+                # 4) A receber por cliente (em aberto)
+                st.divider()
+                st.markdown("**⏳ A receber por cliente (em aberto)**")
                 a_receber = (
                     df_validos.loc[df_validos["pendente"] > 0.001]
                     .groupby("cliente", as_index=False)["pendente"].sum()
                     .sort_values("pendente", ascending=False)
                 )
+                total_receber = a_receber["pendente"].sum() if not a_receber.empty else 0.0
+                a_receber_pdf = list(a_receber.itertuples(index=False, name=None)) if not a_receber.empty else []
                 if a_receber.empty:
                     st.caption("Nada em aberto. 🎉")
                 else:
@@ -1062,7 +1189,29 @@ elif pagina == "📋 Extrato":
                             "pendente": st.column_config.NumberColumn("Deve", format="R$ %.2f"),
                         },
                     )
-                    st.caption(f"Total a receber: **{fmt(a_receber['pendente'].sum())}**")
+                    st.caption(f"Total a receber: **{fmt(total_receber)}**")
+
+                # --- gerar PDF com as 4 visões ---
+                st.divider()
+                periodo_txt = f"Período: {data_ini.strftime('%d/%m/%Y')} a {data_fim.strftime('%d/%m/%Y')}"
+                if missao_filtro != "Todos":
+                    periodo_txt += f"  •  Missão: {missao_filtro}"
+                if cliente_filtro != "Todos":
+                    periodo_txt += f"  •  Cliente: {cliente_filtro}"
+                try:
+                    pdf_bytes = gerar_pdf_fechamento(
+                        periodo_txt, por_forma_pdf, total_receb, por_produto_pdf,
+                        total_consumo, pagantes_pdf, total_pago, a_receber_pdf, total_receber,
+                    )
+                    st.download_button(
+                        "📄 Baixar PDF do fechamento",
+                        data=pdf_bytes,
+                        file_name=f"fechamento_{data_ini.strftime('%Y%m%d')}_{data_fim.strftime('%Y%m%d')}.pdf",
+                        mime="application/pdf",
+                        type="primary",
+                    )
+                except Exception as e:
+                    st.error(f"Não foi possível gerar o PDF: {e}")
 
         # exclusão LÓGICA de lançamento
         if EH_ADMIN and not df_validos.empty:
