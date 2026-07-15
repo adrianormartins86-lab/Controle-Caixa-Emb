@@ -1228,33 +1228,34 @@ elif pagina == "📋 Extrato":
                 except Exception as e:
                     st.error(f"Erro no PDF: {e}")
 
-        # exclusão LÓGICA de lançamento
-        if EH_ADMIN and not df_validos.empty:
-            with st.expander("🗑️ Excluir um lançamento (correção)"):
-                ids = df_validos["id"].tolist()
-                
-                # Função para deixar a lista de exclusão mais amigável
-                def formata_id_exclusao(id_val):
-                    linha_format = df_validos.loc[df_validos["id"] == id_val].iloc[0]
-                    return f"ID {id_val} | {linha_format['produto']} (x{linha_format['quantidade']}) - R$ {linha_format['total']:.2f}"
+        # exclusão LÓGICA por pedido (correção) - apaga o pedido inteiro
+        if EH_ADMIN and not df_ped.empty:
+            with st.expander("🗑️ Excluir um pedido (correção)"):
+                pids = df_ped["pedido_id"].tolist()
 
-                id_excluir = st.selectbox(
-                    "Selecione o lançamento para excluir", 
-                    ids,
-                    format_func=formata_id_exclusao
+                # rótulo amigável: mesmo formato do quadro de Pedidos
+                def formata_pedido_exclusao(pid):
+                    p = df_ped.loc[df_ped["pedido_id"] == pid].iloc[0]
+                    return f"{p['data_lancamento']} | {p['cliente']} | {p['itens']} — R$ {p['total']:.2f}"
+
+                pid_excluir = st.selectbox(
+                    "Selecione o pedido para excluir",
+                    pids,
+                    format_func=formata_pedido_exclusao,
                 )
-                
-                linha = df_validos.loc[df_validos["id"] == id_excluir].iloc[0]
+
+                ped_sel = df_ped.loc[df_ped["pedido_id"] == pid_excluir].iloc[0]
                 st.caption(
-                    f"**Lançamento selecionado:** {linha['data_lancamento']} — {linha['cliente']} — {linha['produto']} "
-                    f"x{linha['quantidade']:g} — R$ {linha['total']:.2f}"
+                    f"**Pedido selecionado:** {ped_sel['data_lancamento']} — {ped_sel['cliente']} — "
+                    f"{ped_sel['itens']} — R$ {ped_sel['total']:.2f}"
                 )
-                
+
                 motivo = st.text_input("Motivo da exclusão (obrigatório)")
                 if st.button("Confirmar exclusão", type="secondary"):
                     if not motivo.strip():
                         st.error("Informe o motivo da exclusão.")
                     else:
+                        # marca todos os itens do pedido como excluídos
                         sb.table("lancamentos").update(
                             {
                                 "excluido": True,
@@ -1262,8 +1263,8 @@ elif pagina == "📋 Extrato":
                                 "excluido_por": PERFIL,
                                 "excluido_em": datetime.now(TZ).isoformat(),
                             }
-                        ).eq("id", int(id_excluir)).execute()
-                        st.success("Lançamento excluído (o registro fica guardado com o motivo).")
+                        ).eq("pedido_id", pid_excluir).execute()
+                        st.success(f"Pedido de {ped_sel['cliente']} excluído (fica guardado com o motivo).")
                         st.rerun()
 
 
