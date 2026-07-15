@@ -103,10 +103,8 @@ def get_supabase() -> Client:
         st.secrets["SUPABASE_SERVICE_KEY"],
     )
 
-
 def hoje_br() -> date:
     return datetime.now(TZ).date()
-
 
 # ------------------------------------------------------------
 # Login simples (senha única em st.secrets)
@@ -138,7 +136,6 @@ def tela_login():
 
             st.divider()
 
-            # st.form evita race condition no login (lição aprendida no Despesas-Comp)
             with st.form("login_form"):
                 senha = st.text_input("🔑 Senha de acesso:", type="password")
                 entrar = st.form_submit_button(
@@ -178,22 +175,29 @@ def carregar_produtos(somente_ativos: bool = True) -> pd.DataFrame:
     dados = q.execute().data
     return pd.DataFrame(dados)
 
-
 def limpar_cache_produtos():
     carregar_produtos.clear()
 
-
 @st.cache_data(ttl=60)
 def carregar_eventos(somente_ativos: bool = True) -> pd.DataFrame:
+    # A tabela continua se chamando 'eventos' para não quebrar o banco, mas a interface mostrará 'Missões'
     q = sb.table("eventos").select("*").order("nome")
     if somente_ativos:
         q = q.eq("ativo", True)
     return pd.DataFrame(q.execute().data)
 
-
 def limpar_cache_eventos():
     carregar_eventos.clear()
 
+@st.cache_data(ttl=60)
+def carregar_clientes(somente_ativos: bool = True) -> pd.DataFrame:
+    q = sb.table("clientes").select("*").order("nome")
+    if somente_ativos:
+        q = q.eq("ativo", True)
+    return pd.DataFrame(q.execute().data)
+
+def limpar_cache_clientes():
+    carregar_clientes.clear()
 
 def carregar_lancamentos(
     data_ini: date,
@@ -222,8 +226,8 @@ def carregar_lancamentos(
         q = q.eq("pago", True)
     return pd.DataFrame(q.execute().data)
 
-
-def clientes_existentes() -> list[str]:
+def clientes_existentes_no_historico() -> list[str]:
+    # Busca clientes que já existem na tabela de lançamentos para não perder o histórico
     dados = sb.table("lancamentos").select("cliente").eq("excluido", False).execute().data
     return sorted({d["cliente"] for d in dados})
 
@@ -232,7 +236,7 @@ def clientes_existentes() -> list[str]:
 # Navegação (menu conforme o perfil)
 # ------------------------------------------------------------
 MENU_USUARIO = ["🧾 Lançamento", "📋 Extrato"]
-MENU_ADMIN = ["🧾 Lançamento", "📋 Extrato", "🛒 Produtos"]
+MENU_ADMIN = ["🧾 Lançamento", "📋 Extrato", "⚙️ Cadastros"]
 
 with st.sidebar:
     st.markdown("## Lanchonete" if TEM_LOGO else "## 🍔 Lanchonete")
@@ -248,9 +252,9 @@ with st.sidebar:
         st.rerun()
 
 # ============================================================
-# TELA: CADASTRO DE PRODUTOS
+# TELA: CADASTROS (Produtos, Missões, Clientes)
 # ============================================================
-if pagina == "🛒 Produtos":
+if pagina == "⚙️ Cadastros":
     if not EH_ADMIN:
         st.warning("Acesso restrito ao administrador.")
         st.stop()
@@ -303,7 +307,7 @@ if pagina == "🛒 Produtos":
                 key="editor_produtos",
             )
 
-            if st.button("💾 Salvar alterações", type="primary"):
+            if st.button("💾 Salvar alterações", type="primary", key="btn_salvar_produtos"):
                 alterados = 0
                 for _, row in df_edit.iterrows():
                     original = df_prod.loc[df_prod["id"] == row["id"]].iloc[0]
@@ -329,36 +333,37 @@ if pagina == "🛒 Produtos":
 
             st.caption("💡 Desmarque **Ativo** para tirar um produto do lançamento sem apagar o histórico.")
 
-    # --- eventos ---
+
+    # --- missões (no DB a tabela chama 'eventos') ---
     st.divider()
-    st.markdown("### 🎪 Eventos")
+    st.markdown("### 🎪 Missões")
     ce1, ce2 = st.columns([1, 2])
 
     with ce1:
-        st.markdown("**Novo evento**")
+        st.markdown("**Nova missão**")
         with st.form("form_evento", clear_on_submit=True):
-            nome_ev = st.text_input("Nome do evento", placeholder="Ex.: Almoço, Pizza, Café...")
-            salvar_ev = st.form_submit_button("➕ Cadastrar evento", type="primary", use_container_width=True)
+            nome_ev = st.text_input("Nome da missão", placeholder="Ex.: Missão Sertão, Jovem...")
+            salvar_ev = st.form_submit_button("➕ Cadastrar missão", type="primary", use_container_width=True)
         if salvar_ev:
             if not nome_ev.strip():
-                st.warning("Informe o nome do evento.")
+                st.warning("Informe o nome da missão.")
             else:
                 try:
                     sb.table("eventos").insert({"nome": nome_ev.strip().title()}).execute()
                     limpar_cache_eventos()
-                    st.success(f"Evento **{nome_ev.strip().title()}** cadastrado!")
+                    st.success(f"Missão **{nome_ev.strip().title()}** cadastrada!")
                     st.rerun()
                 except Exception as e:
                     if "duplicate" in str(e).lower() or "unique" in str(e).lower():
-                        st.error("Já existe um evento com esse nome.")
+                        st.error("Já existe uma missão com esse nome.")
                     else:
                         st.error(f"Erro ao cadastrar: {e}")
 
     with ce2:
-        st.markdown("**Eventos cadastrados**")
+        st.markdown("**Missões cadastradas**")
         df_ev = carregar_eventos(somente_ativos=False)
         if df_ev.empty:
-            st.info("Nenhum evento cadastrado. O script SQL v2 já cria Almoço, Café, Hamburgueria e Pizza.")
+            st.info("Nenhuma missão cadastrada.")
         else:
             df_ev_edit = st.data_editor(
                 df_ev[["id", "nome", "ativo"]],
@@ -367,12 +372,12 @@ if pagina == "🛒 Produtos":
                 disabled=["id"],
                 column_config={
                     "id": st.column_config.NumberColumn("ID", width="small"),
-                    "nome": st.column_config.TextColumn("Evento"),
+                    "nome": st.column_config.TextColumn("Missão"),
                     "ativo": st.column_config.CheckboxColumn("Ativo"),
                 },
                 key="editor_eventos",
             )
-            if st.button("💾 Salvar eventos"):
+            if st.button("💾 Salvar missões", key="btn_salvar_missoes"):
                 alterados = 0
                 for _, row in df_ev_edit.iterrows():
                     original = df_ev.loc[df_ev["id"] == row["id"]].iloc[0]
@@ -383,10 +388,71 @@ if pagina == "🛒 Produtos":
                         alterados += 1
                 limpar_cache_eventos()
                 if alterados:
-                    st.success(f"{alterados} evento(s) atualizado(s)!")
+                    st.success(f"{alterados} missão(ões) atualizada(s)!")
                     st.rerun()
                 else:
                     st.info("Nenhuma alteração detectada.")
+
+
+    # --- clientes ---
+    st.divider()
+    st.markdown("### 👥 Clientes")
+    cc1, cc2 = st.columns([1, 2])
+
+    with cc1:
+        st.markdown("**Novo cliente**")
+        with st.form("form_cliente", clear_on_submit=True):
+            nome_cli = st.text_input("Nome do cliente")
+            salvar_cli = st.form_submit_button("➕ Cadastrar cliente", type="primary", use_container_width=True)
+        if salvar_cli:
+            if not nome_cli.strip():
+                st.warning("Informe o nome do cliente.")
+            else:
+                try:
+                    sb.table("clientes").insert({"nome": nome_cli.strip().title()}).execute()
+                    limpar_cache_clientes()
+                    st.success(f"Cliente **{nome_cli.strip().title()}** cadastrado!")
+                    st.rerun()
+                except Exception as e:
+                    if "duplicate" in str(e).lower() or "unique" in str(e).lower():
+                        st.error("Já existe um cliente com esse nome.")
+                    else:
+                        st.error(f"Erro ao cadastrar: {e}")
+
+    with cc2:
+        st.markdown("**Clientes cadastrados**")
+        df_cli = carregar_clientes(somente_ativos=False)
+        if df_cli.empty:
+            st.info("Nenhum cliente cadastrado.")
+        else:
+            df_cli_edit = st.data_editor(
+                df_cli[["id", "nome", "ativo"]],
+                hide_index=True,
+                use_container_width=True,
+                disabled=["id"],
+                column_config={
+                    "id": st.column_config.NumberColumn("ID", width="small"),
+                    "nome": st.column_config.TextColumn("Cliente"),
+                    "ativo": st.column_config.CheckboxColumn("Ativo"),
+                },
+                key="editor_clientes",
+            )
+            if st.button("💾 Salvar clientes", key="btn_salvar_clientes"):
+                alterados = 0
+                for _, row in df_cli_edit.iterrows():
+                    original = df_cli.loc[df_cli["id"] == row["id"]].iloc[0]
+                    if row["nome"] != original["nome"] or bool(row["ativo"]) != bool(original["ativo"]):
+                        sb.table("clientes").update(
+                            {"nome": str(row["nome"]).strip(), "ativo": bool(row["ativo"])}
+                        ).eq("id", int(row["id"])).execute()
+                        alterados += 1
+                limpar_cache_clientes()
+                if alterados:
+                    st.success(f"{alterados} cliente(s) atualizado(s)!")
+                    st.rerun()
+                else:
+                    st.info("Nenhuma alteração detectada.")
+
 
 # ============================================================
 # TELA: LANÇAMENTO
@@ -396,7 +462,7 @@ elif pagina == "🧾 Lançamento":
 
     df_prod = carregar_produtos(somente_ativos=True)
     if df_prod.empty:
-        st.warning("Cadastre pelo menos um produto na tela **Produtos** antes de lançar.")
+        st.warning("Cadastre pelo menos um produto na aba **⚙️ Cadastros** antes de lançar.")
         st.stop()
 
     precos = dict(zip(df_prod["nome"], df_prod["preco"].astype(float)))
@@ -406,22 +472,19 @@ elif pagina == "🧾 Lançamento":
 
     # --- dados do pedido ---
     df_ev = carregar_eventos(somente_ativos=True)
-    lista_eventos = df_ev["nome"].tolist() if not df_ev.empty else ["Geral"]
+    lista_missoes = df_ev["nome"].tolist() if not df_ev.empty else ["Geral"]
 
-    clientes = clientes_existentes()
+    df_clientes = carregar_clientes(somente_ativos=True)
+    if df_clientes.empty:
+        st.warning("Cadastre pelo menos um cliente na aba **⚙️ Cadastros** para prosseguir.")
+        st.stop()
+    lista_clientes = df_clientes["nome"].tolist()
+
     col_ev, col_a, col_b = st.columns([1.2, 2, 1])
     with col_ev:
-        evento_sel = st.selectbox("🎪 Evento", lista_eventos)
+        missao_sel = st.selectbox("🎪 Missão", lista_missoes)
     with col_a:
-        opcao_cliente = st.selectbox(
-            "Cliente",
-            ["✏️ Digitar novo cliente..."] + clientes,
-            help="Escolha um cliente já usado ou digite um novo.",
-        )
-        if opcao_cliente == "✏️ Digitar novo cliente...":
-            cliente = st.text_input("Nome do cliente")
-        else:
-            cliente = opcao_cliente
+        cliente_sel = st.selectbox("Cliente", lista_clientes, help="Escolha um cliente previamente cadastrado.")
     with col_b:
         data_lanc = st.date_input("Data", value=hoje_br(), format="DD/MM/YYYY")
 
@@ -433,7 +496,8 @@ elif pagina == "🧾 Lançamento":
     with c1:
         produto_sel = st.selectbox("Produto", df_prod["nome"].tolist(), key="sel_produto")
     with c2:
-        qtde = st.number_input("Qtde", min_value=0.5, value=1.0, step=0.5, key="inp_qtde")
+        # Step=1 e aceita apenas inteiros agora
+        qtde = st.number_input("Qtde", min_value=1, value=1, step=1, key="inp_qtde")
     with c3:
         preco_padrao = precos.get(produto_sel, 0.0)
         preco_unit = st.number_input(
@@ -442,7 +506,7 @@ elif pagina == "🧾 Lançamento":
             value=preco_padrao,
             step=0.50,
             format="%.2f",
-            key=f"inp_preco_{produto_sel}",  # muda a key -> recarrega o preço do cadastro
+            key=f"inp_preco_{produto_sel}",
             help="Vem do cadastro, mas pode alterar.",
         )
     with c4:
@@ -457,7 +521,7 @@ elif pagina == "🧾 Lançamento":
             st.session_state["carrinho"].append(
                 {
                     "produto": produto_sel,
-                    "quantidade": qtde,
+                    "quantidade": int(qtde),
                     "preco_unitario": preco_unit,
                     "obs_item": obs_item.strip(),
                     "total": round(qtde * preco_unit, 2),
@@ -476,7 +540,7 @@ elif pagina == "🧾 Lançamento":
             if item.get("obs_item"):
                 rotulo += f"  \n:gray[_{item['obs_item']}_]"
             ic1.markdown(rotulo)
-            ic2.write(f"x {item['quantidade']:g}")
+            ic2.write(f"x {item['quantidade']}")
             ic3.write(f"R$ {item['preco_unitario']:.2f}")
             ic4.write(f"**R$ {item['total']:.2f}**")
             if ic5.button("🗑️", key=f"del_{i}"):
@@ -501,16 +565,16 @@ elif pagina == "🧾 Lançamento":
         col_s1, col_s2 = st.columns([1, 3])
         with col_s1:
             if st.button("✅ Salvar lançamento", type="primary", use_container_width=True):
-                if not cliente or not cliente.strip():
-                    st.error("Informe o nome do cliente.")
+                if not cliente_sel or not cliente_sel.strip():
+                    st.error("Selecione um cliente.")
                 else:
                     pedido_id = uuid.uuid4().hex[:8]
                     esta_pago = situacao == "✅ Pago"
                     linhas = [
                         {
                             "pedido_id": pedido_id,
-                            "cliente": cliente.strip().title(),
-                            "evento": evento_sel,
+                            "cliente": cliente_sel.strip().title(),
+                            "evento": missao_sel,  # Salva no DB a missão selecionada
                             "produto": it["produto"],
                             "quantidade": it["quantidade"],
                             "preco_unitario": it["preco_unitario"],
@@ -526,7 +590,7 @@ elif pagina == "🧾 Lançamento":
                     try:
                         sb.table("lancamentos").insert(linhas).execute()
                         st.session_state["carrinho"] = []
-                        st.success(f"Lançamento salvo para **{cliente.strip().title()}**! 🎉")
+                        st.success(f"Lançamento salvo para **{cliente_sel.strip().title()}**! 🎉")
                         st.rerun()
                     except Exception as e:
                         st.error(f"Erro ao salvar: {e}")
@@ -544,7 +608,13 @@ elif pagina == "📋 Extrato":
     st.markdown("### 📋 Extrato de Lançamentos")
 
     df_ev_todos = carregar_eventos(somente_ativos=False)
-    lista_ev_filtro = ["Todos"] + (df_ev_todos["nome"].tolist() if not df_ev_todos.empty else [])
+    lista_missao_filtro = ["Todos"] + (df_ev_todos["nome"].tolist() if not df_ev_todos.empty else [])
+
+    # Junta os clientes do histórico (tabela lançamentos) com os da nova tabela clientes
+    cli_historico = clientes_existentes_no_historico()
+    df_cli_todos = carregar_clientes(somente_ativos=False)
+    cli_cadastrados = df_cli_todos["nome"].tolist() if not df_cli_todos.empty else []
+    lista_cli_filtro = ["Todos"] + sorted(list(set(cli_historico + cli_cadastrados)))
 
     f1, f2, f3, f4, f5 = st.columns([1, 1, 1.4, 1.1, 1.1])
     with f1:
@@ -552,9 +622,9 @@ elif pagina == "📋 Extrato":
     with f2:
         data_fim = st.date_input("Até", value=hoje_br(), format="DD/MM/YYYY")
     with f3:
-        cliente_filtro = st.selectbox("Cliente", ["Todos"] + clientes_existentes())
+        cliente_filtro = st.selectbox("Cliente", lista_cli_filtro)
     with f4:
-        evento_filtro = st.selectbox("Evento", lista_ev_filtro)
+        missao_filtro = st.selectbox("Missão", lista_missao_filtro)
     with f5:
         situacao_filtro = st.selectbox("Situação", ["Todos", "⏳ Pendentes", "✅ Pagos"])
 
@@ -563,13 +633,20 @@ elif pagina == "📋 Extrato":
         ver_excluidos = st.checkbox("Mostrar também os lançamentos excluídos")
 
     df = carregar_lancamentos(
-        data_ini, data_fim, cliente_filtro, situacao_filtro, evento_filtro, ver_excluidos
+        data_ini, data_fim, cliente_filtro, situacao_filtro, missao_filtro, ver_excluidos
     )
 
     if df.empty:
         st.info("Nenhum lançamento encontrado nesse período.")
     else:
         df["data_lancamento"] = pd.to_datetime(df["data_lancamento"]).dt.strftime("%d/%m/%Y")
+        
+        # Formatando Data de Pagamento
+        if "data_pagamento" in df.columns:
+            df["data_pagamento"] = pd.to_datetime(df["data_pagamento"]).dt.strftime("%d/%m/%Y").fillna("-")
+        else:
+            df["data_pagamento"] = "-"
+            
         df["situacao"] = df["pago"].map({True: "✅ Pago", False: "⏳ Pendente"})
         if "excluido" in df.columns:
             df.loc[df["excluido"], "situacao"] = "🚫 Excluído"
@@ -587,17 +664,18 @@ elif pagina == "📋 Extrato":
         m4.metric("Clientes", df_validos["cliente"].nunique())
 
         st.dataframe(
-            df[["data_lancamento", "cliente", "evento", "produto", "obs_item", "quantidade",
+            df[["data_lancamento", "data_pagamento", "cliente", "evento", "produto", "obs_item", "quantidade",
                 "preco_unitario", "total", "situacao", "observacao", "motivo_exclusao", "pedido_id"]],
             hide_index=True,
             use_container_width=True,
             column_config={
-                "data_lancamento": st.column_config.TextColumn("Data"),
+                "data_lancamento": st.column_config.TextColumn("Data Lanç."),
+                "data_pagamento": st.column_config.TextColumn("Data Pgto"),
                 "cliente": st.column_config.TextColumn("Cliente"),
-                "evento": st.column_config.TextColumn("Evento"),
+                "evento": st.column_config.TextColumn("Missão"),
                 "produto": st.column_config.TextColumn("Produto"),
                 "obs_item": st.column_config.TextColumn("Obs. Item"),
-                "quantidade": st.column_config.NumberColumn("Qtde", format="%g"),
+                "quantidade": st.column_config.NumberColumn("Qtde", format="%d"),
                 "preco_unitario": st.column_config.NumberColumn("Preço Unit.", format="R$ %.2f"),
                 "total": st.column_config.NumberColumn("Total", format="R$ %.2f"),
                 "situacao": st.column_config.TextColumn("Situação"),
@@ -655,7 +733,7 @@ elif pagina == "📋 Extrato":
                     },
                 )
 
-        # exclusão LÓGICA de lançamento (somente administrador; registro nunca é apagado)
+        # exclusão LÓGICA de lançamento
         if EH_ADMIN and not df_validos.empty:
             with st.expander("🗑️ Excluir um lançamento (correção)"):
                 ids = df_validos["id"].tolist()
