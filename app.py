@@ -492,11 +492,12 @@ elif pagina == "🧾 Lançamento":
 
     # --- adicionar itens ao pedido ---
     st.markdown("**Adicionar produto ao pedido**")
-    c1, c2, c3, c4, c5 = st.columns([2.5, 1, 1.3, 2, 1.2])
+    
+    # Adicionamos mais uma coluna (c_extra) e reajustamos os tamanhos para caber tudo
+    c1, c2, c3, c_extra, c4, c5 = st.columns([2.0, 0.7, 1.1, 1.1, 2.0, 1.1])
     with c1:
         produto_sel = st.selectbox("Produto", df_prod["nome"].tolist(), key="sel_produto")
     with c2:
-        # Step=1 e aceita apenas inteiros agora
         qtde = st.number_input("Qtde", min_value=1, value=1, step=1, key="inp_qtde")
     with c3:
         preco_padrao = precos.get(produto_sel, 0.0)
@@ -507,13 +508,22 @@ elif pagina == "🧾 Lançamento":
             step=0.50,
             format="%.2f",
             key=f"inp_preco_{produto_sel}",
-            help="Vem do cadastro, mas pode alterar.",
+        )
+    with c_extra:
+        preco_extra = st.number_input(
+            "Valor extra (R$)",
+            min_value=0.0,
+            value=0.0,
+            step=0.50,
+            format="%.2f",
+            key=f"inp_extra_{produto_sel}",
+            help="Bacon, borda recheada, etc."
         )
     with c4:
         obs_item = st.text_input(
             "Obs. do item",
             key="inp_obs_item",
-            placeholder="sem queijo, bem passado...",
+            placeholder="Ex: com bacon...",
         )
     with c5:
         st.markdown("<br>", unsafe_allow_html=True)
@@ -523,8 +533,10 @@ elif pagina == "🧾 Lançamento":
                     "produto": produto_sel,
                     "quantidade": int(qtde),
                     "preco_unitario": preco_unit,
+                    "preco_extra": preco_extra,
                     "obs_item": obs_item.strip(),
-                    "total": round(qtde * preco_unit, 2),
+                    # O total já calcula o preço unitário + o valor extra
+                    "total": round(qtde * (preco_unit + preco_extra), 2),
                 }
             )
             st.rerun()
@@ -541,7 +553,13 @@ elif pagina == "🧾 Lançamento":
                 rotulo += f"  \n:gray[_{item['obs_item']}_]"
             ic1.markdown(rotulo)
             ic2.write(f"x {item['quantidade']}")
-            ic3.write(f"R$ {item['preco_unitario']:.2f}")
+            
+            # Mostra o valor extra na tela do carrinho de forma elegante
+            if item.get("preco_extra", 0) > 0:
+                ic3.write(f"R$ {item['preco_unitario']:.2f}  \n*(+ R$ {item['preco_extra']:.2f})*")
+            else:
+                ic3.write(f"R$ {item['preco_unitario']:.2f}")
+                
             ic4.write(f"**R$ {item['total']:.2f}**")
             if ic5.button("🗑️", key=f"del_{i}"):
                 carrinho.pop(i)
@@ -574,10 +592,11 @@ elif pagina == "🧾 Lançamento":
                         {
                             "pedido_id": pedido_id,
                             "cliente": cliente_sel.strip().title(),
-                            "evento": missao_sel,  # Salva no DB a missão selecionada
+                            "evento": missao_sel,
                             "produto": it["produto"],
                             "quantidade": it["quantidade"],
-                            "preco_unitario": it["preco_unitario"],
+                            # Soma o unitário + extra antes de mandar para o banco de dados
+                            "preco_unitario": it["preco_unitario"] + it.get("preco_extra", 0.0),
                             "obs_item": it.get("obs_item") or None,
                             "observacao": observacao.strip() or None,
                             "data_lancamento": data_lanc.isoformat(),
