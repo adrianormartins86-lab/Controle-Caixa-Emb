@@ -203,11 +203,7 @@ def clientes_existentes() -> list[str]:
 # Navegação
 # ------------------------------------------------------------
 with st.sidebar:
-    if TEM_LOGO:
-        st.image(LOGO, width=90)
-        st.markdown("## Lanchonete")
-    else:
-        st.markdown("## 🍔 Lanchonete")
+    st.markdown("## Lanchonete" if TEM_LOGO else "## 🍔 Lanchonete")
     pagina = st.radio(
         "Menu",
         ["🧾 Lançamento", "📋 Extrato", "🛒 Produtos"],
