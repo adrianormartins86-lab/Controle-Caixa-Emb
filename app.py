@@ -61,7 +61,7 @@ st.markdown(
     }}
     /* Título dentro do cabeçalho */
     header[data-testid="stHeader"]::before {{
-        content: "Controle de Caixa - Embaixada";
+        content: "Controle de Caixa - Embaixada de Cristo";
         position: absolute;
         left: 260px;
         top: 50%;
