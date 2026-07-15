@@ -274,14 +274,15 @@ def link_whatsapp(telefone: str, mensagem: str) -> str:
 
 
 def gerar_pdf_fechamento(periodo_txt, por_forma, total_receb, por_produto,
-                         total_consumo, pagantes, total_pago, a_receber, total_receber):
-    """Monta o PDF do fechamento com as 4 visões em uma página."""
+                         total_consumo, pagantes, total_pago, a_receber, total_receber,
+                         por_missao=None, total_missao=0.0):
+    """Monta o PDF do fechamento com as visões dispostas em 2 colunas."""
     from io import BytesIO
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.units import mm
     from reportlab.lib import colors
     from reportlab.platypus import (SimpleDocTemplate, Table, TableStyle, Paragraph,
-                                    Spacer, Image as RLImage)
+                                    Spacer, Image as RLImage, KeepTogether)
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 
     AZUL_RL = colors.HexColor("#0B3D91")
@@ -293,20 +294,98 @@ def gerar_pdf_fechamento(periodo_txt, por_forma, total_receb, por_produto,
 
     buf = BytesIO()
     doc = SimpleDocTemplate(buf, pagesize=A4,
-                            leftMargin=15 * mm, rightMargin=15 * mm,
+                            leftMargin=12 * mm, rightMargin=12 * mm,
                             topMargin=12 * mm, bottomMargin=12 * mm)
     styles = getSampleStyleSheet()
     titulo = ParagraphStyle("titulo", parent=styles["Title"], textColor=AZUL_RL, fontSize=16)
     sub = ParagraphStyle("sub", parent=styles["Normal"], textColor=colors.grey, fontSize=9)
-    sec = ParagraphStyle("sec", parent=styles["Heading3"], textColor=MAGENTA_RL, fontSize=11, spaceBefore=8)
+    sec = ParagraphStyle("sec", parent=styles["Heading3"], textColor=MAGENTA_RL, fontSize=10, spaceBefore=2, spaceAfter=2)
+
+    # largura útil de cada coluna (A4 - margens, dividido em 2 com um vão)
+    COL_W = 91 * mm
+
+    def bloco_tabela(dados, larguras):
+        t = Table(dados, colWidths=larguras, repeatRows=1)
+        t.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), AZUL_RL),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTNAME", (0, -1), (-1, -1), "Helvetica-Bold"),  # linha TOTAL em negrito
+            ("FONTSIZE", (0, 0), (-1, -1), 8),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, AZUL_CLARO_RL]),
+            ("ALIGN", (1, 0), (-1, -1), "RIGHT"),
+            ("ALIGN", (0, 0), (0, -1), "LEFT"),
+            ("GRID", (0, 0), (-1, -1), 0.4, colors.lightgrey),
+            ("TOPPADDING", (0, 0), (-1, -1), 2.5),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 2.5),
+        ]))
+        return t
+
+    def secao(titulo_txt, tabela):
+        # retorna a lista de flowables da seção (sem KeepTogether p/ caber em célula)
+        return [Paragraph(titulo_txt, sec), tabela, Spacer(1, 4)]
+
+    # monta cada seção como um "flowable" único
+    secoes = []
+
+    # Forma de pagamento
+    linhas = [["Forma", "Recebido"]] + [[f, moeda(v)] for f, v in por_forma]
+    linhas.append(["TOTAL", moeda(total_receb)])
+    secoes.append(secao("Recebido por forma de pagamento", bloco_tabela(linhas, [50 * mm, 41 * mm])))
+
+    # Por missão
+    if por_missao:
+        linhas = [["Missão", "Total"]] + [[m, moeda(v)] for m, v in por_missao]
+        linhas.append(["TOTAL", moeda(total_missao)])
+        secoes.append(secao("Consumo por missão", bloco_tabela(linhas, [50 * mm, 41 * mm])))
+
+    # Consumo por produto
+    linhas = [["Produto", "Qtde", "Total"]] + [[p, str(int(q)), moeda(v)] for p, q, v in por_produto]
+    linhas.append(["TOTAL", "", moeda(total_consumo)])
+    secoes.append(secao("Consumo por produto", bloco_tabela(linhas, [46 * mm, 15 * mm, 30 * mm])))
+
+    # Clientes que pagaram
+    if pagantes:
+        linhas = [["Cliente", "Pago"]] + [[c, moeda(v)] for c, v in pagantes]
+        linhas.append(["TOTAL", moeda(total_pago)])
+    else:
+        linhas = [["Cliente", "Pago"], ["(nenhum recebimento)", "-"]]
+    secoes.append(secao("Clientes que pagaram", bloco_tabela(linhas, [55 * mm, 36 * mm])))
+
+    # A receber por cliente
+    if a_receber:
+        linhas = [["Cliente", "Deve"]] + [[c, moeda(v)] for c, v in a_receber]
+        linhas.append(["TOTAL", moeda(total_receber)])
+    else:
+        linhas = [["Cliente", "Deve"], ["(nada em aberto)", "-"]]
+    secoes.append(secao("A receber por cliente", bloco_tabela(linhas, [55 * mm, 36 * mm])))
+
+    # distribui as seções em 2 colunas (esquerda/direita) alternadamente
+    col_esq, col_dir = [], []
+    for i, s in enumerate(secoes):
+        (col_esq if i % 2 == 0 else col_dir).extend(s)
+
+    def coluna_para_tabela(flowables):
+        # empilha os flowables da coluna numa tabela vertical de 1 coluna
+        if not flowables:
+            return Spacer(1, 1)
+        t = Table([[f] for f in flowables], colWidths=[COL_W])
+        t.setStyle(TableStyle([
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 0),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+            ("TOPPADDING", (0, 0), (-1, -1), 0),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+        ]))
+        return t
 
     elems = []
-    # cabeçalho (logo se existir)
+    # cabeçalho
     if TEM_LOGO:
         try:
-            cab = Table([[RLImage(LOGO, width=18 * mm, height=18 * mm),
+            cab = Table([[RLImage(LOGO, width=16 * mm, height=16 * mm),
                           Paragraph("Fechamento — Lanchonete da Igreja", titulo)]],
-                        colWidths=[22 * mm, None])
+                        colWidths=[20 * mm, None])
             cab.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE")]))
             elems.append(cab)
         except Exception:
@@ -316,51 +395,19 @@ def gerar_pdf_fechamento(periodo_txt, por_forma, total_receb, por_produto,
     elems.append(Paragraph(periodo_txt, sub))
     elems.append(Spacer(1, 6))
 
-    def tabela(dados, larguras):
-        t = Table(dados, colWidths=larguras, repeatRows=1)
-        t.setStyle(TableStyle([
-            ("BACKGROUND", (0, 0), (-1, 0), AZUL_RL),
-            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-            ("FONTSIZE", (0, 0), (-1, -1), 9),
-            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, AZUL_CLARO_RL]),
-            ("ALIGN", (1, 0), (-1, -1), "RIGHT"),
-            ("ALIGN", (0, 0), (0, -1), "LEFT"),
-            ("GRID", (0, 0), (-1, -1), 0.4, colors.lightgrey),
-            ("TOPPADDING", (0, 0), (-1, -1), 3),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
-        ]))
-        return t
-
-    # 1) Forma de pagamento
-    elems.append(Paragraph("Recebido por forma de pagamento", sec))
-    linhas = [["Forma", "Recebido"]] + [[f, moeda(v)] for f, v in por_forma]
-    linhas.append(["TOTAL", moeda(total_receb)])
-    elems.append(tabela(linhas, [None, 40 * mm]))
-
-    # 2) Consumo por produto
-    elems.append(Paragraph("Consumo por produto", sec))
-    linhas = [["Produto", "Qtde", "Total"]] + [[p, str(int(q)), moeda(v)] for p, q, v in por_produto]
-    linhas.append(["TOTAL", "", moeda(total_consumo)])
-    elems.append(tabela(linhas, [None, 25 * mm, 35 * mm]))
-
-    # 3) Clientes que pagaram
-    elems.append(Paragraph("Clientes que pagaram", sec))
-    if pagantes:
-        linhas = [["Cliente", "Pago"]] + [[c, moeda(v)] for c, v in pagantes]
-        linhas.append(["TOTAL", moeda(total_pago)])
-    else:
-        linhas = [["Cliente", "Pago"], ["(nenhum recebimento)", "-"]]
-    elems.append(tabela(linhas, [None, 40 * mm]))
-
-    # 4) A receber por cliente
-    elems.append(Paragraph("A receber por cliente", sec))
-    if a_receber:
-        linhas = [["Cliente", "Deve"]] + [[c, moeda(v)] for c, v in a_receber]
-        linhas.append(["TOTAL", moeda(total_receber)])
-    else:
-        linhas = [["Cliente", "Deve"], ["(nada em aberto)", "-"]]
-    elems.append(tabela(linhas, [None, 40 * mm]))
+    # grid de 2 colunas
+    grid = Table([[coluna_para_tabela(col_esq), coluna_para_tabela(col_dir)]],
+                 colWidths=[COL_W, COL_W])
+    grid.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (0, 0), 0),
+        ("RIGHTPADDING", (0, 0), (0, 0), 6),
+        ("LEFTPADDING", (1, 0), (1, 0), 6),
+        ("RIGHTPADDING", (1, 0), (1, 0), 0),
+        ("TOPPADDING", (0, 0), (-1, -1), 0),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+    ]))
+    elems.append(grid)
 
     doc.build(elems)
     buf.seek(0)
@@ -1098,6 +1145,21 @@ elif pagina == "📋 Extrato":
                 )
                 st.caption(f"Total do consumo: **{fmt(total_consumo)}**")
 
+                # Consumo por missão
+                st.divider()
+                st.markdown("**🎪 Consumo por missão**")
+                por_missao = df_validos.groupby("evento", as_index=False)["total"].sum().sort_values("total", ascending=False)
+                total_missao = df_validos["total"].sum()
+                por_missao_pdf = list(por_missao.itertuples(index=False, name=None))
+                st.dataframe(
+                    por_missao, hide_index=True, use_container_width=True,
+                    column_config={
+                        "evento": st.column_config.TextColumn("Missão"),
+                        "total": st.column_config.NumberColumn("Total", format="R$ %.2f"),
+                    },
+                )
+                st.caption(f"Total geral: **{fmt(total_missao)}**")
+
                 # 3) Clientes que pagaram (total ou parcial)
                 st.divider()
                 st.markdown("**✅ Clientes que pagaram**")
@@ -1153,11 +1215,12 @@ elif pagina == "📋 Extrato":
                     pdf_bytes = gerar_pdf_fechamento(
                         periodo_txt, por_forma_pdf, total_receb, por_produto_pdf,
                         total_consumo, pagantes_pdf, total_pago, a_receber_pdf, total_receber,
+                        por_missao_pdf, total_missao,
                     )
                     st.download_button(
                         "📄 Baixar PDF",
                         data=pdf_bytes,
-                        file_name=f"fechamento_{data_ini.strftime('%Y%m%d')}_{data_fim.strftime('%Y%m%d')}.pdf",
+                        file_name=f"fechamento_{data_fim.strftime('%d-%m-%Y')}.pdf",
                         mime="application/pdf",
                         type="primary",
                         use_container_width=True,
