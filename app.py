@@ -575,19 +575,54 @@ elif pagina == "🧾 Lançamento":
 
         situacao = st.radio(
             "Situação do pagamento",
-            ["✅ Pago", "⏳ Pendente"],
+            ["✅ Pago", "⏳ Pendente", "💸 Parcial"],
             horizontal=True,
-            help="Se ficar pendente, dá pra marcar como pago depois, na tela de Extrato.",
+            help="Parcial: cliente pagou só uma parte agora; o restante fica como pendente no extrato.",
         )
+
+        valor_pago_input = 0.0
+        if situacao == "💸 Parcial":
+            valor_pago_input = st.number_input(
+                "Valor pago agora (R$)",
+                min_value=0.0,
+                max_value=float(total_pedido),
+                value=0.0,
+                step=0.50,
+                format="%.2f",
+                help=f"Total do pedido: R$ {total_pedido:.2f}. O que faltar vira pendente.",
+            )
+            falta = total_pedido - valor_pago_input
+            st.caption(f"Ficará **devendo R$ {falta:.2f}** deste pedido.")
 
         col_s1, col_s2 = st.columns([1, 3])
         with col_s1:
             if st.button("✅ Salvar lançamento", type="primary", use_container_width=True):
                 if not cliente_sel or not cliente_sel.strip():
                     st.error("Selecione um cliente.")
+                elif situacao == "💸 Parcial" and valor_pago_input <= 0:
+                    st.error("Informe o valor pago (maior que zero) ou escolha Pendente.")
                 else:
                     pedido_id = uuid.uuid4().hex[:8]
                     esta_pago = situacao == "✅ Pago"
+
+                    # Distribui o valor pago do pedido entre as linhas (itens),
+                    # proporcional ao total de cada item, para o somatório bater certo.
+                    if esta_pago:
+                        valor_pago_por_item = [it["total"] for it in carrinho]
+                    elif situacao == "💸 Parcial":
+                        restante = round(valor_pago_input, 2)
+                        valor_pago_por_item = []
+                        for idx, it in enumerate(carrinho):
+                            if idx == len(carrinho) - 1:
+                                # última linha recebe o que sobrou (evita erro de arredondamento)
+                                valor_pago_por_item.append(round(restante, 2))
+                            else:
+                                parcela = min(it["total"], restante)
+                                valor_pago_por_item.append(round(parcela, 2))
+                                restante = round(restante - parcela, 2)
+                    else:  # Pendente
+                        valor_pago_por_item = [0.0 for _ in carrinho]
+
                     linhas = [
                         {
                             "pedido_id": pedido_id,
@@ -601,10 +636,11 @@ elif pagina == "🧾 Lançamento":
                             "observacao": observacao.strip() or None,
                             "data_lancamento": data_lanc.isoformat(),
                             "pago": esta_pago,
+                            "valor_pago": valor_pago_por_item[idx],
                             "data_pagamento": data_lanc.isoformat() if esta_pago else None,
                             "lancado_por": PERFIL,
                         }
-                        for it in carrinho
+                        for idx, it in enumerate(carrinho)
                     ]
                     try:
                         sb.table("lancamentos").insert(linhas).execute()
@@ -666,80 +702,181 @@ elif pagina == "📋 Extrato":
         else:
             df["data_pagamento"] = "-"
             
-        df["situacao"] = df["pago"].map({True: "✅ Pago", False: "⏳ Pendente"})
-        if "excluido" in df.columns:
-            df.loc[df["excluido"], "situacao"] = "🚫 Excluído"
+        # valor_pago pode não existir em registros muito antigos -> assume 0
+        if "valor_pago" not in df.columns:
+            df["valor_pago"] = 0.0
+        df["valor_pago"] = df["valor_pago"].fillna(0.0)
+        df["pendente"] = (df["total"] - df["valor_pago"]).round(2).clip(lower=0)
+
+        def situacao_linha(row):
+            if row.get("excluido"):
+                return "🚫 Excluído"
+            if row["pendente"] <= 0.001:
+                return "✅ Pago"
+            if row["valor_pago"] > 0.001:
+                return "💸 Parcial"
+            return "⏳ Pendente"
+
+        df["situacao"] = df.apply(situacao_linha, axis=1)
 
         def fmt_moeda(v: float) -> str:
             return f"R$ {v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
         df_validos = df.loc[~df["excluido"]] if "excluido" in df.columns else df
-        total_pendente = df_validos.loc[~df_validos["pago"], "total"].sum()
+        total_pendente = df_validos["pendente"].sum()
 
         m1, m2, m3, m4 = st.columns(4)
         m1.metric("Total no período", fmt_moeda(df_validos["total"].sum()))
-        m2.metric("⏳ Pendente", fmt_moeda(total_pendente))
-        m3.metric("Lançamentos (itens)", len(df_validos))
+        m2.metric("⏳ A receber", fmt_moeda(total_pendente))
+        m3.metric("Pedidos", df_validos["pedido_id"].nunique())
         m4.metric("Clientes", df_validos["cliente"].nunique())
 
+        # ------------------------------------------------------------
+        # Visão AGRUPADA POR PEDIDO (uma linha por pedido)
+        # ------------------------------------------------------------
+        st.markdown("#### 📦 Pedidos")
+
+        def resumo_itens(sub: pd.DataFrame) -> str:
+            partes = []
+            for _, r in sub.iterrows():
+                p = f"{int(r['quantidade'])}x {r['produto']}"
+                if r.get("obs_item"):
+                    p += f" ({r['obs_item']})"
+                partes.append(p)
+            return ", ".join(partes)
+
+        grupos = []
+        for pid, sub in df_validos.groupby("pedido_id"):
+            grupos.append({
+                "pedido_id": pid,
+                "data_lancamento": sub["data_lancamento"].iloc[0],
+                "data_pagamento": sub["data_pagamento"].iloc[0],
+                "cliente": sub["cliente"].iloc[0],
+                "evento": sub["evento"].iloc[0],
+                "itens": resumo_itens(sub),
+                "total": round(sub["total"].sum(), 2),
+                "valor_pago": round(sub["valor_pago"].sum(), 2),
+                "pendente": round(sub["pendente"].sum(), 2),
+                "observacao": sub["observacao"].iloc[0],
+                "situacao": ("✅ Pago" if sub["pendente"].sum() <= 0.001
+                             else ("💸 Parcial" if sub["valor_pago"].sum() > 0.001
+                                   else "⏳ Pendente")),
+            })
+        df_ped = pd.DataFrame(grupos).sort_values(["situacao", "cliente"])
+
         st.dataframe(
-            df[["id", "data_lancamento", "data_pagamento", "cliente", "evento", "produto", "obs_item", "quantidade",
-                "preco_unitario", "total", "situacao", "observacao"]],
+            df_ped[["data_lancamento", "data_pagamento", "cliente", "evento", "itens",
+                    "total", "valor_pago", "pendente", "situacao", "observacao"]],
             hide_index=True,
             use_container_width=True,
             column_config={
-                "id": st.column_config.NumberColumn("ID", format="%d", width="small"),
                 "data_lancamento": st.column_config.TextColumn("Data Lanç."),
                 "data_pagamento": st.column_config.TextColumn("Data Pgto"),
                 "cliente": st.column_config.TextColumn("Cliente"),
                 "evento": st.column_config.TextColumn("Missão"),
-                "produto": st.column_config.TextColumn("Produto"),
-                "obs_item": st.column_config.TextColumn("Obs. Item"),
-                "quantidade": st.column_config.NumberColumn("Qtde", format="%d"),
-                "preco_unitario": st.column_config.NumberColumn("Preço Unit.", format="R$ %.2f"),
+                "itens": st.column_config.TextColumn("Itens do Pedido", width="large"),
                 "total": st.column_config.NumberColumn("Total", format="R$ %.2f"),
+                "valor_pago": st.column_config.NumberColumn("Pgto Parcial", format="R$ %.2f"),
+                "pendente": st.column_config.NumberColumn("Valor Pendente", format="R$ %.2f"),
                 "situacao": st.column_config.TextColumn("Situação"),
                 "observacao": st.column_config.TextColumn("Obs. Pedido"),
             },
         )
 
-        # --- marcar pendentes como pagos (somente administrador) ---
-        df_pend = df_validos.loc[~df_validos["pago"]]
-        if EH_ADMIN and not df_pend.empty:
-            st.markdown("#### ⏳ Pendentes — marcar como pago")
-            pedidos_pend = (
-                df_pend.groupby(["pedido_id", "cliente", "data_lancamento"], as_index=False)
-                .agg(itens=("produto", lambda s: ", ".join(s)), total=("total", "sum"))
-                .sort_values("cliente")
+        # detalhe item a item (opcional)
+        with st.expander("🔍 Ver detalhe item a item"):
+            st.dataframe(
+                df[["data_lancamento", "cliente", "evento", "produto", "obs_item",
+                    "quantidade", "preco_unitario", "total", "situacao"]],
+                hide_index=True,
+                use_container_width=True,
+                column_config={
+                    "data_lancamento": st.column_config.TextColumn("Data"),
+                    "cliente": st.column_config.TextColumn("Cliente"),
+                    "evento": st.column_config.TextColumn("Missão"),
+                    "produto": st.column_config.TextColumn("Produto"),
+                    "obs_item": st.column_config.TextColumn("Obs. Item"),
+                    "quantidade": st.column_config.NumberColumn("Qtde", format="%d"),
+                    "preco_unitario": st.column_config.NumberColumn("Preço Unit.", format="R$ %.2f"),
+                    "total": st.column_config.NumberColumn("Total", format="R$ %.2f"),
+                    "situacao": st.column_config.TextColumn("Situação"),
+                },
             )
-            for _, ped in pedidos_pend.iterrows():
-                p1, p2, p3, p4, p5 = st.columns([1.5, 1.2, 3, 1.2, 1.5])
-                p1.write(f"**{ped['cliente']}**")
-                p2.write(ped["data_lancamento"])
-                p3.write(ped["itens"])
-                p4.write(f"**{fmt_moeda(ped['total'])}**")
-                if p5.button("✔️ Marcar pago", key=f"pg_{ped['pedido_id']}"):
-                    sb.table("lancamentos").update(
-                        {"pago": True, "data_pagamento": hoje_br().isoformat()}
-                    ).eq("pedido_id", ped["pedido_id"]).execute()
-                    st.success(f"Pedido de {ped['cliente']} marcado como pago!")
-                    st.rerun()
+
+        # ------------------------------------------------------------
+        # Registrar / ajustar recebimento por pedido (somente administrador)
+        # ------------------------------------------------------------
+        def registrar_pagamento_pedido(pedido_id: str, valor_recebido: float, df_ref: pd.DataFrame):
+            """Distribui o valor recebido entre as linhas do pedido e grava valor_pago/pago."""
+            itens = df_ref.loc[df_ref["pedido_id"] == pedido_id].sort_values("id")
+            restante = round(valor_recebido, 2)
+            total_pedido = round(itens["total"].sum(), 2)
+            quitou_tudo = valor_recebido >= total_pedido - 0.001
+            ids = itens["id"].tolist()
+            for pos, (_, item) in enumerate(itens.iterrows()):
+                if pos == len(ids) - 1:
+                    pago_item = round(restante, 2)
+                else:
+                    pago_item = round(min(item["total"], restante), 2)
+                    restante = round(restante - pago_item, 2)
+                sb.table("lancamentos").update({
+                    "valor_pago": pago_item,
+                    "pago": pago_item >= item["total"] - 0.001,
+                    "data_pagamento": hoje_br().isoformat() if quitou_tudo else None,
+                }).eq("id", int(item["id"])).execute()
+
+        pedidos_abertos = df_ped.loc[df_ped["pendente"] > 0.001]
+        if EH_ADMIN and not pedidos_abertos.empty:
+            st.markdown("#### 💰 Receber / ajustar pagamento")
+            st.caption("Digite quanto o cliente já pagou no total do pedido. O sistema recalcula o pendente sozinho.")
+
+            for _, ped in pedidos_abertos.iterrows():
+                pid = ped["pedido_id"]
+                with st.container(border=True):
+                    c1, c2, c3, c4, c5 = st.columns([1.6, 3, 1.3, 1.6, 1.3])
+                    c1.markdown(f"**{ped['cliente']}**  \n:gray[{ped['data_lancamento']}]")
+                    c2.markdown(f"{ped['itens']}")
+                    c3.markdown(f"Total  \n**{fmt_moeda(ped['total'])}**")
+                    novo_valor = c4.number_input(
+                        "Valor pago (R$)",
+                        min_value=0.0,
+                        max_value=float(ped["total"]),
+                        value=float(ped["valor_pago"]),
+                        step=0.50,
+                        format="%.2f",
+                        key=f"vp_{pid}",
+                    )
+                    c5.markdown("<br>", unsafe_allow_html=True)
+                    if c5.button("💾 Salvar", key=f"save_{pid}", use_container_width=True):
+                        registrar_pagamento_pedido(pid, novo_valor, df_validos)
+                        if novo_valor >= ped["total"] - 0.001:
+                            st.success(f"Pedido de {ped['cliente']} quitado!")
+                        else:
+                            falta = ped["total"] - novo_valor
+                            st.success(f"Registrado R$ {novo_valor:.2f} de {ped['cliente']} — resta R$ {falta:.2f}.")
+                        st.rerun()
+
+                    # botão rápido de quitar tudo
+                    if ped["pendente"] > 0.001:
+                        if c5.button("✔️ Quitar tudo", key=f"quit_{pid}", use_container_width=True):
+                            registrar_pagamento_pedido(pid, float(ped["total"]), df_validos)
+                            st.success(f"Pedido de {ped['cliente']} quitado!")
+                            st.rerun()
 
             if cliente_filtro != "Todos":
-                if st.button(f"✅ Marcar TODOS os pendentes de {cliente_filtro} como pagos", type="primary"):
-                    sb.table("lancamentos").update(
-                        {"pago": True, "data_pagamento": hoje_br().isoformat()}
-                    ).eq("cliente", cliente_filtro).eq("pago", False).eq("excluido", False).execute()
-                    st.success(f"Todos os pendentes de {cliente_filtro} foram quitados!")
+                if st.button(f"✅ Quitar TODOS os pedidos abertos de {cliente_filtro}", type="primary"):
+                    for _, ped in pedidos_abertos.iterrows():
+                        registrar_pagamento_pedido(ped["pedido_id"], float(ped["total"]), df_validos)
+                    st.success(f"Todos os pedidos de {cliente_filtro} foram quitados!")
                     st.rerun()
 
         # resumo por cliente
         if cliente_filtro == "Todos":
             with st.expander("📊 Resumo por cliente"):
                 resumo = (
-                    df_validos.groupby("cliente", as_index=False)["total"]
+                    df_validos.groupby("cliente", as_index=False)[["total", "valor_pago", "pendente"]]
                     .sum()
-                    .sort_values("total", ascending=False)
+                    .sort_values("pendente", ascending=False)
                 )
                 st.dataframe(
                     resumo,
@@ -748,6 +885,8 @@ elif pagina == "📋 Extrato":
                     column_config={
                         "cliente": st.column_config.TextColumn("Cliente"),
                         "total": st.column_config.NumberColumn("Total (R$)", format="R$ %.2f"),
+                        "valor_pago": st.column_config.NumberColumn("Pago (R$)", format="R$ %.2f"),
+                        "pendente": st.column_config.NumberColumn("Devendo (R$)", format="R$ %.2f"),
                     },
                 )
 
