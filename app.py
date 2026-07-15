@@ -146,8 +146,13 @@ def tela_login():
                 )
 
             if entrar:
-                if senha == st.secrets["APP_SENHA"]:
+                if senha == st.secrets["SENHA_ADMIN"]:
                     st.session_state["logado"] = True
+                    st.session_state["perfil"] = "Administrador"
+                    st.rerun()
+                elif senha == st.secrets["SENHA_USUARIO"]:
+                    st.session_state["logado"] = True
+                    st.session_state["perfil"] = "Usuário"
                     st.rerun()
                 else:
                     st.error("Senha incorreta.")
@@ -156,6 +161,9 @@ def tela_login():
 if not st.session_state.get("logado"):
     tela_login()
     st.stop()
+
+PERFIL = st.session_state.get("perfil", "Usuário")
+EH_ADMIN = PERFIL == "Administrador"
 
 sb = get_supabase()
 
@@ -175,8 +183,25 @@ def limpar_cache_produtos():
     carregar_produtos.clear()
 
 
+@st.cache_data(ttl=60)
+def carregar_eventos(somente_ativos: bool = True) -> pd.DataFrame:
+    q = sb.table("eventos").select("*").order("nome")
+    if somente_ativos:
+        q = q.eq("ativo", True)
+    return pd.DataFrame(q.execute().data)
+
+
+def limpar_cache_eventos():
+    carregar_eventos.clear()
+
+
 def carregar_lancamentos(
-    data_ini: date, data_fim: date, cliente: str | None, situacao: str = "Todos"
+    data_ini: date,
+    data_fim: date,
+    cliente: str | None,
+    situacao: str = "Todos",
+    evento: str = "Todos",
+    incluir_excluidos: bool = False,
 ) -> pd.DataFrame:
     q = (
         sb.table("lancamentos")
@@ -185,8 +210,12 @@ def carregar_lancamentos(
         .lte("data_lancamento", data_fim.isoformat())
         .order("criado_em", desc=True)
     )
+    if not incluir_excluidos:
+        q = q.eq("excluido", False)
     if cliente and cliente != "Todos":
         q = q.eq("cliente", cliente)
+    if evento and evento != "Todos":
+        q = q.eq("evento", evento)
     if situacao == "⏳ Pendentes":
         q = q.eq("pago", False)
     elif situacao == "✅ Pagos":
@@ -195,18 +224,22 @@ def carregar_lancamentos(
 
 
 def clientes_existentes() -> list[str]:
-    dados = sb.table("lancamentos").select("cliente").execute().data
+    dados = sb.table("lancamentos").select("cliente").eq("excluido", False).execute().data
     return sorted({d["cliente"] for d in dados})
 
 
 # ------------------------------------------------------------
-# Navegação
+# Navegação (menu conforme o perfil)
 # ------------------------------------------------------------
+MENU_USUARIO = ["🧾 Lançamento", "📋 Extrato"]
+MENU_ADMIN = ["🧾 Lançamento", "📋 Extrato", "🛒 Produtos"]
+
 with st.sidebar:
     st.markdown("## Lanchonete" if TEM_LOGO else "## 🍔 Lanchonete")
+    st.caption(f"👤 Perfil: **{PERFIL}**")
     pagina = st.radio(
         "Menu",
-        ["🧾 Lançamento", "📋 Extrato", "🛒 Produtos"],
+        MENU_ADMIN if EH_ADMIN else MENU_USUARIO,
         label_visibility="collapsed",
     )
     st.divider()
@@ -218,6 +251,10 @@ with st.sidebar:
 # TELA: CADASTRO DE PRODUTOS
 # ============================================================
 if pagina == "🛒 Produtos":
+    if not EH_ADMIN:
+        st.warning("Acesso restrito ao administrador.")
+        st.stop()
+
     st.markdown("### 🛒 Cadastro de Produtos")
 
     col1, col2 = st.columns([1, 2])
@@ -292,6 +329,65 @@ if pagina == "🛒 Produtos":
 
             st.caption("💡 Desmarque **Ativo** para tirar um produto do lançamento sem apagar o histórico.")
 
+    # --- eventos ---
+    st.divider()
+    st.markdown("### 🎪 Eventos")
+    ce1, ce2 = st.columns([1, 2])
+
+    with ce1:
+        st.markdown("**Novo evento**")
+        with st.form("form_evento", clear_on_submit=True):
+            nome_ev = st.text_input("Nome do evento", placeholder="Ex.: Almoço, Pizza, Café...")
+            salvar_ev = st.form_submit_button("➕ Cadastrar evento", type="primary", use_container_width=True)
+        if salvar_ev:
+            if not nome_ev.strip():
+                st.warning("Informe o nome do evento.")
+            else:
+                try:
+                    sb.table("eventos").insert({"nome": nome_ev.strip().title()}).execute()
+                    limpar_cache_eventos()
+                    st.success(f"Evento **{nome_ev.strip().title()}** cadastrado!")
+                    st.rerun()
+                except Exception as e:
+                    if "duplicate" in str(e).lower() or "unique" in str(e).lower():
+                        st.error("Já existe um evento com esse nome.")
+                    else:
+                        st.error(f"Erro ao cadastrar: {e}")
+
+    with ce2:
+        st.markdown("**Eventos cadastrados**")
+        df_ev = carregar_eventos(somente_ativos=False)
+        if df_ev.empty:
+            st.info("Nenhum evento cadastrado. O script SQL v2 já cria Almoço, Café, Hamburgueria e Pizza.")
+        else:
+            df_ev_edit = st.data_editor(
+                df_ev[["id", "nome", "ativo"]],
+                hide_index=True,
+                use_container_width=True,
+                disabled=["id"],
+                column_config={
+                    "id": st.column_config.NumberColumn("ID", width="small"),
+                    "nome": st.column_config.TextColumn("Evento"),
+                    "ativo": st.column_config.CheckboxColumn("Ativo"),
+                },
+                key="editor_eventos",
+            )
+            if st.button("💾 Salvar eventos"):
+                alterados = 0
+                for _, row in df_ev_edit.iterrows():
+                    original = df_ev.loc[df_ev["id"] == row["id"]].iloc[0]
+                    if row["nome"] != original["nome"] or bool(row["ativo"]) != bool(original["ativo"]):
+                        sb.table("eventos").update(
+                            {"nome": str(row["nome"]).strip(), "ativo": bool(row["ativo"])}
+                        ).eq("id", int(row["id"])).execute()
+                        alterados += 1
+                limpar_cache_eventos()
+                if alterados:
+                    st.success(f"{alterados} evento(s) atualizado(s)!")
+                    st.rerun()
+                else:
+                    st.info("Nenhuma alteração detectada.")
+
 # ============================================================
 # TELA: LANÇAMENTO
 # ============================================================
@@ -308,9 +404,14 @@ elif pagina == "🧾 Lançamento":
     if "carrinho" not in st.session_state:
         st.session_state["carrinho"] = []
 
-    # --- dados do cliente ---
+    # --- dados do pedido ---
+    df_ev = carregar_eventos(somente_ativos=True)
+    lista_eventos = df_ev["nome"].tolist() if not df_ev.empty else ["Geral"]
+
     clientes = clientes_existentes()
-    col_a, col_b = st.columns([2, 1])
+    col_ev, col_a, col_b = st.columns([1.2, 2, 1])
+    with col_ev:
+        evento_sel = st.selectbox("🎪 Evento", lista_eventos)
     with col_a:
         opcao_cliente = st.selectbox(
             "Cliente",
@@ -328,7 +429,7 @@ elif pagina == "🧾 Lançamento":
 
     # --- adicionar itens ao pedido ---
     st.markdown("**Adicionar produto ao pedido**")
-    c1, c2, c3, c4 = st.columns([3, 1, 1.5, 1.5])
+    c1, c2, c3, c4, c5 = st.columns([2.5, 1, 1.3, 2, 1.2])
     with c1:
         produto_sel = st.selectbox("Produto", df_prod["nome"].tolist(), key="sel_produto")
     with c2:
@@ -345,6 +446,12 @@ elif pagina == "🧾 Lançamento":
             help="Vem do cadastro, mas pode alterar.",
         )
     with c4:
+        obs_item = st.text_input(
+            "Obs. do item",
+            key="inp_obs_item",
+            placeholder="sem queijo, bem passado...",
+        )
+    with c5:
         st.markdown("<br>", unsafe_allow_html=True)
         if st.button("➕ Adicionar", use_container_width=True):
             st.session_state["carrinho"].append(
@@ -352,6 +459,7 @@ elif pagina == "🧾 Lançamento":
                     "produto": produto_sel,
                     "quantidade": qtde,
                     "preco_unitario": preco_unit,
+                    "obs_item": obs_item.strip(),
                     "total": round(qtde * preco_unit, 2),
                 }
             )
@@ -364,13 +472,21 @@ elif pagina == "🧾 Lançamento":
         df_car = pd.DataFrame(carrinho)
         for i, item in enumerate(carrinho):
             ic1, ic2, ic3, ic4, ic5 = st.columns([3, 1, 1.5, 1.5, 0.7])
-            ic1.write(item["produto"])
+            rotulo = item["produto"]
+            if item.get("obs_item"):
+                rotulo += f"  \n:gray[_{item['obs_item']}_]"
+            ic1.markdown(rotulo)
             ic2.write(f"x {item['quantidade']:g}")
             ic3.write(f"R$ {item['preco_unitario']:.2f}")
             ic4.write(f"**R$ {item['total']:.2f}**")
             if ic5.button("🗑️", key=f"del_{i}"):
                 carrinho.pop(i)
                 st.rerun()
+
+        observacao = st.text_input(
+            "Observação do pedido (opcional)",
+            placeholder="Ex.: pagar na sexta, entregar na mesa 3...",
+        )
 
         total_pedido = df_car["total"].sum()
         st.markdown(f"#### 💰 Total do pedido: R$ {total_pedido:.2f}")
@@ -394,12 +510,16 @@ elif pagina == "🧾 Lançamento":
                         {
                             "pedido_id": pedido_id,
                             "cliente": cliente.strip().title(),
+                            "evento": evento_sel,
                             "produto": it["produto"],
                             "quantidade": it["quantidade"],
                             "preco_unitario": it["preco_unitario"],
+                            "obs_item": it.get("obs_item") or None,
+                            "observacao": observacao.strip() or None,
                             "data_lancamento": data_lanc.isoformat(),
                             "pago": esta_pago,
                             "data_pagamento": data_lanc.isoformat() if esta_pago else None,
+                            "lancado_por": PERFIL,
                         }
                         for it in carrinho
                     ]
@@ -423,7 +543,10 @@ elif pagina == "🧾 Lançamento":
 elif pagina == "📋 Extrato":
     st.markdown("### 📋 Extrato de Lançamentos")
 
-    f1, f2, f3, f4 = st.columns([1, 1, 1.5, 1.2])
+    df_ev_todos = carregar_eventos(somente_ativos=False)
+    lista_ev_filtro = ["Todos"] + (df_ev_todos["nome"].tolist() if not df_ev_todos.empty else [])
+
+    f1, f2, f3, f4, f5 = st.columns([1, 1, 1.4, 1.1, 1.1])
     with f1:
         data_ini = st.date_input("De", value=hoje_br() - timedelta(days=30), format="DD/MM/YYYY")
     with f2:
@@ -431,46 +554,62 @@ elif pagina == "📋 Extrato":
     with f3:
         cliente_filtro = st.selectbox("Cliente", ["Todos"] + clientes_existentes())
     with f4:
+        evento_filtro = st.selectbox("Evento", lista_ev_filtro)
+    with f5:
         situacao_filtro = st.selectbox("Situação", ["Todos", "⏳ Pendentes", "✅ Pagos"])
 
-    df = carregar_lancamentos(data_ini, data_fim, cliente_filtro, situacao_filtro)
+    ver_excluidos = False
+    if EH_ADMIN:
+        ver_excluidos = st.checkbox("Mostrar também os lançamentos excluídos")
+
+    df = carregar_lancamentos(
+        data_ini, data_fim, cliente_filtro, situacao_filtro, evento_filtro, ver_excluidos
+    )
 
     if df.empty:
         st.info("Nenhum lançamento encontrado nesse período.")
     else:
         df["data_lancamento"] = pd.to_datetime(df["data_lancamento"]).dt.strftime("%d/%m/%Y")
         df["situacao"] = df["pago"].map({True: "✅ Pago", False: "⏳ Pendente"})
+        if "excluido" in df.columns:
+            df.loc[df["excluido"], "situacao"] = "🚫 Excluído"
 
         def fmt_moeda(v: float) -> str:
             return f"R$ {v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
-        total_pendente = df.loc[~df["pago"], "total"].sum()
+        df_validos = df.loc[~df["excluido"]] if "excluido" in df.columns else df
+        total_pendente = df_validos.loc[~df_validos["pago"], "total"].sum()
 
         m1, m2, m3, m4 = st.columns(4)
-        m1.metric("Total no período", fmt_moeda(df["total"].sum()))
+        m1.metric("Total no período", fmt_moeda(df_validos["total"].sum()))
         m2.metric("⏳ Pendente", fmt_moeda(total_pendente))
-        m3.metric("Lançamentos (itens)", len(df))
-        m4.metric("Clientes", df["cliente"].nunique())
+        m3.metric("Lançamentos (itens)", len(df_validos))
+        m4.metric("Clientes", df_validos["cliente"].nunique())
 
         st.dataframe(
-            df[["data_lancamento", "cliente", "produto", "quantidade", "preco_unitario", "total", "situacao", "pedido_id"]],
+            df[["data_lancamento", "cliente", "evento", "produto", "obs_item", "quantidade",
+                "preco_unitario", "total", "situacao", "observacao", "motivo_exclusao", "pedido_id"]],
             hide_index=True,
             use_container_width=True,
             column_config={
                 "data_lancamento": st.column_config.TextColumn("Data"),
                 "cliente": st.column_config.TextColumn("Cliente"),
+                "evento": st.column_config.TextColumn("Evento"),
                 "produto": st.column_config.TextColumn("Produto"),
+                "obs_item": st.column_config.TextColumn("Obs. Item"),
                 "quantidade": st.column_config.NumberColumn("Qtde", format="%g"),
                 "preco_unitario": st.column_config.NumberColumn("Preço Unit.", format="R$ %.2f"),
                 "total": st.column_config.NumberColumn("Total", format="R$ %.2f"),
                 "situacao": st.column_config.TextColumn("Situação"),
+                "observacao": st.column_config.TextColumn("Obs. Pedido"),
+                "motivo_exclusao": st.column_config.TextColumn("Motivo Exclusão"),
                 "pedido_id": st.column_config.TextColumn("Pedido", width="small"),
             },
         )
 
-        # --- marcar pendentes como pagos ---
-        df_pend = df.loc[~df["pago"]]
-        if not df_pend.empty:
+        # --- marcar pendentes como pagos (somente administrador) ---
+        df_pend = df_validos.loc[~df_validos["pago"]]
+        if EH_ADMIN and not df_pend.empty:
             st.markdown("#### ⏳ Pendentes — marcar como pago")
             pedidos_pend = (
                 df_pend.groupby(["pedido_id", "cliente", "data_lancamento"], as_index=False)
@@ -494,7 +633,7 @@ elif pagina == "📋 Extrato":
                 if st.button(f"✅ Marcar TODOS os pendentes de {cliente_filtro} como pagos", type="primary"):
                     sb.table("lancamentos").update(
                         {"pago": True, "data_pagamento": hoje_br().isoformat()}
-                    ).eq("cliente", cliente_filtro).eq("pago", False).execute()
+                    ).eq("cliente", cliente_filtro).eq("pago", False).eq("excluido", False).execute()
                     st.success(f"Todos os pendentes de {cliente_filtro} foram quitados!")
                     st.rerun()
 
@@ -502,7 +641,7 @@ elif pagina == "📋 Extrato":
         if cliente_filtro == "Todos":
             with st.expander("📊 Resumo por cliente"):
                 resumo = (
-                    df.groupby("cliente", as_index=False)["total"]
+                    df_validos.groupby("cliente", as_index=False)["total"]
                     .sum()
                     .sort_values("total", ascending=False)
                 )
@@ -516,16 +655,28 @@ elif pagina == "📋 Extrato":
                     },
                 )
 
-        # exclusão de lançamento (correção de erro)
-        with st.expander("🗑️ Excluir um lançamento (correção)"):
-            ids = df["id"].tolist()
-            id_excluir = st.selectbox("ID do lançamento", ids)
-            linha = df.loc[df["id"] == id_excluir].iloc[0]
-            st.caption(
-                f"{linha['data_lancamento']} — {linha['cliente']} — {linha['produto']} "
-                f"x{linha['quantidade']:g} — R$ {linha['total']:.2f}"
-            )
-            if st.button("Confirmar exclusão", type="secondary"):
-                sb.table("lancamentos").delete().eq("id", int(id_excluir)).execute()
-                st.success("Lançamento excluído.")
-                st.rerun()
+        # exclusão LÓGICA de lançamento (somente administrador; registro nunca é apagado)
+        if EH_ADMIN and not df_validos.empty:
+            with st.expander("🗑️ Excluir um lançamento (correção)"):
+                ids = df_validos["id"].tolist()
+                id_excluir = st.selectbox("ID do lançamento", ids)
+                linha = df_validos.loc[df_validos["id"] == id_excluir].iloc[0]
+                st.caption(
+                    f"{linha['data_lancamento']} — {linha['cliente']} — {linha['produto']} "
+                    f"x{linha['quantidade']:g} — R$ {linha['total']:.2f}"
+                )
+                motivo = st.text_input("Motivo da exclusão (obrigatório)")
+                if st.button("Confirmar exclusão", type="secondary"):
+                    if not motivo.strip():
+                        st.error("Informe o motivo da exclusão.")
+                    else:
+                        sb.table("lancamentos").update(
+                            {
+                                "excluido": True,
+                                "motivo_exclusao": motivo.strip(),
+                                "excluido_por": PERFIL,
+                                "excluido_em": datetime.now(TZ).isoformat(),
+                            }
+                        ).eq("id", int(id_excluir)).execute()
+                        st.success("Lançamento excluído (o registro fica guardado com o motivo).")
+                        st.rerun()
