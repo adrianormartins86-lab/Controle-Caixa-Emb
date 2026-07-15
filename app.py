@@ -1105,7 +1105,11 @@ elif pagina == "📋 Extrato":
         # Fechamento do dia (por forma de pgto / por produto / por cliente)
         # ------------------------------------------------------------
         if EH_ADMIN:
-            with st.expander("📑 Fechamento do período (resumos)"):
+            # Cabeçalho do fechamento: expander à esquerda, botão de PDF à direita
+            col_fech, col_pdf = st.columns([4, 1.2])
+            with col_fech:
+                exp_fech = st.expander("📑 Fechamento do período (resumos)")
+            with exp_fech:
                 fmt = fmt_moeda
 
                 # 1) Recebido por forma de pagamento
@@ -1191,27 +1195,28 @@ elif pagina == "📋 Extrato":
                     )
                     st.caption(f"Total a receber: **{fmt(total_receber)}**")
 
-                # --- gerar PDF com as 4 visões ---
-                st.divider()
-                periodo_txt = f"Período: {data_ini.strftime('%d/%m/%Y')} a {data_fim.strftime('%d/%m/%Y')}"
-                if missao_filtro != "Todos":
-                    periodo_txt += f"  •  Missão: {missao_filtro}"
-                if cliente_filtro != "Todos":
-                    periodo_txt += f"  •  Cliente: {cliente_filtro}"
+            # --- gerar PDF com as 4 visões (botão ao lado do cabeçalho) ---
+            periodo_txt = f"Período: {data_ini.strftime('%d/%m/%Y')} a {data_fim.strftime('%d/%m/%Y')}"
+            if missao_filtro != "Todos":
+                periodo_txt += f"  •  Missão: {missao_filtro}"
+            if cliente_filtro != "Todos":
+                periodo_txt += f"  •  Cliente: {cliente_filtro}"
+            with col_pdf:
                 try:
                     pdf_bytes = gerar_pdf_fechamento(
                         periodo_txt, por_forma_pdf, total_receb, por_produto_pdf,
                         total_consumo, pagantes_pdf, total_pago, a_receber_pdf, total_receber,
                     )
                     st.download_button(
-                        "📄 Baixar PDF do fechamento",
+                        "📄 Baixar PDF",
                         data=pdf_bytes,
                         file_name=f"fechamento_{data_ini.strftime('%Y%m%d')}_{data_fim.strftime('%Y%m%d')}.pdf",
                         mime="application/pdf",
                         type="primary",
+                        use_container_width=True,
                     )
                 except Exception as e:
-                    st.error(f"Não foi possível gerar o PDF: {e}")
+                    st.error(f"Erro no PDF: {e}")
 
         # exclusão LÓGICA de lançamento
         if EH_ADMIN and not df_validos.empty:
