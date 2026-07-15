@@ -59,6 +59,20 @@ st.markdown(
     header[data-testid="stHeader"] {{
         background: linear-gradient(90deg, {MAGENTA} 0%, {AZUL} 60%);
     }}
+    /* Título dentro do cabeçalho */
+    header[data-testid="stHeader"]::before {{
+        content: "Controle de Caixa - Embaixada";
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        transform: translate(-50%, -50%);
+        color: #FFFFFF;
+        font-size: 1.15rem;
+        font-weight: 700;
+        letter-spacing: 0.5px;
+        white-space: nowrap;
+        pointer-events: none;
+    }}
 
     /* Títulos em azul */
     h1, h2, h3 {{
@@ -357,7 +371,8 @@ def gerar_pdf_fechamento(periodo_txt, por_forma, total_receb, por_produto,
 # Navegação (menu conforme o perfil)
 # ------------------------------------------------------------
 MENU_USUARIO = ["🧾 Lançamento", "📋 Extrato"]
-MENU_ADMIN = ["🧾 Lançamento", "📋 Extrato", "⚙️ Cadastros"]
+MENU_ADMIN = ["🧾 Lançamento", "📋 Extrato", "📊 Resumo por cliente",
+              "📱 Gerar Cobrança", "⚙️ Configurações"]
 
 with st.sidebar:
     st.markdown("## Lanchonete" if TEM_LOGO else "## 🍔 Lanchonete")
@@ -375,7 +390,7 @@ with st.sidebar:
 # ============================================================
 # TELA: CADASTROS (Produtos, Missões, Clientes)
 # ============================================================
-if pagina == "⚙️ Cadastros":
+if pagina == "⚙️ Configurações":
     if not EH_ADMIN:
         st.warning("Acesso restrito ao administrador.")
         st.stop()
@@ -612,7 +627,7 @@ elif pagina == "🧾 Lançamento":
 
     df_prod = carregar_produtos(somente_ativos=True)
     if df_prod.empty:
-        st.warning("Cadastre pelo menos um produto na aba **⚙️ Cadastros** antes de lançar.")
+        st.warning("Cadastre pelo menos um produto na aba **⚙️ Configurações** antes de lançar.")
         st.stop()
 
     precos = dict(zip(df_prod["nome"], df_prod["preco"].astype(float)))
@@ -626,7 +641,7 @@ elif pagina == "🧾 Lançamento":
 
     df_clientes = carregar_clientes(somente_ativos=True)
     if df_clientes.empty:
-        st.warning("Cadastre pelo menos um cliente na aba **⚙️ Cadastros** para prosseguir.")
+        st.warning("Cadastre pelo menos um cliente na aba **⚙️ Configurações** para prosseguir.")
         st.stop()
     lista_clientes = df_clientes["nome"].tolist()
 
@@ -842,9 +857,8 @@ elif pagina == "📋 Extrato":
     with f5:
         situacao_filtro = st.selectbox("Situação", ["Todos", "⏳ Pendentes", "✅ Pagos"])
 
+    # excluídos nunca entram na visão normal (ficam guardados no banco com o motivo)
     ver_excluidos = False
-    if EH_ADMIN:
-        ver_excluidos = st.checkbox("Mostrar também os lançamentos excluídos")
 
     df = carregar_lancamentos(
         data_ini, data_fim, cliente_filtro, situacao_filtro, missao_filtro, ver_excluidos
@@ -1034,73 +1048,6 @@ elif pagina == "📋 Extrato":
                     st.success(f"Todos os pedidos de {cliente_filtro} foram quitados!")
                     st.rerun()
 
-        # resumo por cliente
-        if cliente_filtro == "Todos":
-            with st.expander("📊 Resumo por cliente"):
-                resumo = (
-                    df_validos.groupby("cliente", as_index=False)[["total", "valor_pago", "pendente"]]
-                    .sum()
-                    .sort_values("pendente", ascending=False)
-                )
-                st.dataframe(
-                    resumo,
-                    hide_index=True,
-                    use_container_width=True,
-                    column_config={
-                        "cliente": st.column_config.TextColumn("Cliente"),
-                        "total": st.column_config.NumberColumn("Total (R$)", format="R$ %.2f"),
-                        "valor_pago": st.column_config.NumberColumn("Pago (R$)", format="R$ %.2f"),
-                        "pendente": st.column_config.NumberColumn("Devendo (R$)", format="R$ %.2f"),
-                    },
-                )
-
-        # ------------------------------------------------------------
-        # Mensagem de cobrança por cliente (WhatsApp)
-        # ------------------------------------------------------------
-        if EH_ADMIN:
-            with st.expander("📱 Gerar cobrança (WhatsApp)"):
-                devedores = (
-                    df_validos.loc[df_validos["pendente"] > 0.001]
-                    .groupby("cliente")["pendente"].sum().sort_values(ascending=False)
-                )
-                if devedores.empty:
-                    st.info("Nenhum cliente com valor em aberto no período filtrado. 🎉")
-                else:
-                    cli_cobrar = st.selectbox("Cliente", devedores.index.tolist())
-                    cfg = carregar_config()
-                    pix_chave = cfg.get("pix_chave", "")
-                    pix_nome = cfg.get("pix_nome", "")
-
-                    # monta itens em aberto do cliente, por pedido/data
-                    itens_cli = df_validos.loc[
-                        (df_validos["cliente"] == cli_cobrar) & (df_validos["pendente"] > 0.001)
-                    ]
-                    linhas_msg = []
-                    for data_ped, sub in itens_cli.groupby("data_lancamento"):
-                        linhas_msg.append(f"\n{data_ped}")
-                        for _, r in sub.iterrows():
-                            linhas_msg.append(f"{int(r['quantidade'])} {r['produto']} {r['total']:.2f}".replace(".", ","))
-                    total_aberto = itens_cli["pendente"].sum()
-
-                    saudacao = f"Paz {cli_cobrar}!\nBoa tarde!\n\nSua conta se encontra em aberto do consumo:"
-                    corpo = "\n".join(linhas_msg)
-                    fecho = f"\n\nTotal em aberto: R$ {total_aberto:.2f}".replace(".", ",")
-                    if pix_chave:
-                        fecho += (f"\n\nSe puder realizar o pix na chave {pix_chave}"
-                                  + (f" ({pix_nome})" if pix_nome else "")
-                                  + " e mandar o comprovante, agradecemos.\nDeus abençoe!!")
-                    mensagem = saudacao + "\n" + corpo + fecho
-
-                    mensagem_editada = st.text_area("Mensagem (pode editar antes de enviar)", value=mensagem, height=260)
-
-                    tel = telefone_do_cliente(cli_cobrar)
-                    col_w1, col_w2 = st.columns([1, 3])
-                    if tel:
-                        col_w1.link_button("📲 Abrir no WhatsApp", link_whatsapp(tel, mensagem_editada), use_container_width=True)
-                    else:
-                        col_w1.caption("Sem telefone cadastrado")
-                        col_w2.caption("Cadastre o telefone do cliente na aba ⚙️ Cadastros para liberar o botão. Você ainda pode copiar o texto acima.")
-
         # ------------------------------------------------------------
         # Fechamento do dia (por forma de pgto / por produto / por cliente)
         # ------------------------------------------------------------
@@ -1255,3 +1202,112 @@ elif pagina == "📋 Extrato":
                         ).eq("id", int(id_excluir)).execute()
                         st.success("Lançamento excluído (o registro fica guardado com o motivo).")
                         st.rerun()
+
+
+# ============================================================
+# TELA: RESUMO POR CLIENTE (todos os períodos)
+# ============================================================
+elif pagina == "📊 Resumo por cliente":
+    st.markdown("### 📊 Resumo por cliente")
+    st.caption("Considera todos os lançamentos, de todos os períodos.")
+
+    dados_all = sb.table("lancamentos").select("*").eq("excluido", False).execute().data
+    df_all = pd.DataFrame(dados_all)
+
+    if df_all.empty:
+        st.info("Nenhum lançamento registrado ainda.")
+    else:
+        if "valor_pago" not in df_all.columns:
+            df_all["valor_pago"] = 0.0
+        df_all["valor_pago"] = df_all["valor_pago"].fillna(0.0)
+        df_all["pendente"] = (df_all["total"] - df_all["valor_pago"]).round(2).clip(lower=0)
+
+        def fmt_moeda(v: float) -> str:
+            return f"R$ {v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Total geral", fmt_moeda(df_all["total"].sum()))
+        m2.metric("Recebido", fmt_moeda(df_all["valor_pago"].sum()))
+        m3.metric("⏳ A receber", fmt_moeda(df_all["pendente"].sum()))
+
+        resumo = (
+            df_all.groupby("cliente", as_index=False)[["total", "valor_pago", "pendente"]]
+            .sum()
+            .sort_values("pendente", ascending=False)
+        )
+        st.dataframe(
+            resumo,
+            hide_index=True,
+            use_container_width=True,
+            column_config={
+                "cliente": st.column_config.TextColumn("Cliente"),
+                "total": st.column_config.NumberColumn("Total (R$)", format="R$ %.2f"),
+                "valor_pago": st.column_config.NumberColumn("Pago (R$)", format="R$ %.2f"),
+                "pendente": st.column_config.NumberColumn("Devendo (R$)", format="R$ %.2f"),
+            },
+        )
+
+# ============================================================
+# TELA: GERAR COBRANÇA (WhatsApp) - pendências de todos os dias
+# ============================================================
+elif pagina == "📱 Gerar Cobrança":
+    st.markdown("### 📱 Gerar Cobrança (WhatsApp)")
+    st.caption("Levanta as pendências de todos os dias e produtos do cliente.")
+
+    dados_all = sb.table("lancamentos").select("*").eq("excluido", False).execute().data
+    df_all = pd.DataFrame(dados_all)
+
+    if df_all.empty:
+        st.info("Nenhum lançamento registrado ainda.")
+    else:
+        if "valor_pago" not in df_all.columns:
+            df_all["valor_pago"] = 0.0
+        df_all["valor_pago"] = df_all["valor_pago"].fillna(0.0)
+        df_all["pendente"] = (df_all["total"] - df_all["valor_pago"]).round(2).clip(lower=0)
+        df_all["data_fmt"] = pd.to_datetime(df_all["data_lancamento"]).dt.strftime("%d/%m/%Y")
+
+        devedores = (
+            df_all.loc[df_all["pendente"] > 0.001]
+            .groupby("cliente")["pendente"].sum().sort_values(ascending=False)
+        )
+        if devedores.empty:
+            st.success("Nenhum cliente com valor em aberto. 🎉")
+        else:
+            opcoes = [f"{c}  —  deve R$ {v:.2f}".replace(".", ",") for c, v in devedores.items()]
+            escolha = st.selectbox("Cliente com pendência", opcoes)
+            cli_cobrar = devedores.index[opcoes.index(escolha)]
+
+            cfg = carregar_config()
+            pix_chave = cfg.get("pix_chave", "")
+            pix_nome = cfg.get("pix_nome", "")
+
+            # itens em aberto do cliente, agrupados por data
+            itens_cli = df_all.loc[
+                (df_all["cliente"] == cli_cobrar) & (df_all["pendente"] > 0.001)
+            ].sort_values("data_lancamento")
+            linhas_msg = []
+            for data_ped, sub in itens_cli.groupby("data_fmt"):
+                linhas_msg.append(f"\n{data_ped}")
+                for _, r in sub.iterrows():
+                    valor_txt = f"{r['pendente']:.2f}".replace(".", ",")
+                    linhas_msg.append(f"{int(r['quantidade'])} {r['produto']} {valor_txt}")
+            total_aberto = itens_cli["pendente"].sum()
+
+            saudacao = f"Paz {cli_cobrar}!\nBoa tarde!\n\nSua conta se encontra em aberto do consumo:"
+            corpo = "\n".join(linhas_msg)
+            fecho = f"\n\nTotal em aberto: R$ {total_aberto:.2f}".replace(".", ",")
+            if pix_chave:
+                fecho += (f"\n\nSe puder realizar o pix na chave {pix_chave}"
+                          + (f" ({pix_nome})" if pix_nome else "")
+                          + " e mandar o comprovante, agradecemos.\nDeus abençoe!!")
+            mensagem = saudacao + "\n" + corpo + fecho
+
+            mensagem_editada = st.text_area("Mensagem (pode editar antes de enviar)", value=mensagem, height=300)
+
+            tel = telefone_do_cliente(cli_cobrar)
+            col_w1, col_w2 = st.columns([1, 3])
+            if tel:
+                col_w1.link_button("📲 Abrir no WhatsApp", link_whatsapp(tel, mensagem_editada), use_container_width=True)
+            else:
+                col_w1.caption("Sem telefone")
+                col_w2.caption("Cadastre o telefone do cliente na aba ⚙️ Configurações para liberar o botão. Você ainda pode copiar o texto acima.")
