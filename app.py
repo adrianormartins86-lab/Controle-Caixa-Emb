@@ -19,6 +19,74 @@ st.set_page_config(
 )
 
 # ------------------------------------------------------------
+# Tema Molicenter (azul / branco / magenta)
+# Ajuste os tons oficiais aqui se necessário:
+AZUL = "#0B3D91"
+AZUL_ESCURO = "#062A66"
+MAGENTA = "#E6007E"
+MAGENTA_HOVER = "#C4006B"
+AZUL_CLARO = "#EEF3FB"
+
+st.markdown(
+    f"""
+    <style>
+    /* Sidebar azul com texto branco */
+    [data-testid="stSidebar"] {{
+        background: linear-gradient(180deg, {AZUL} 0%, {AZUL_ESCURO} 100%);
+    }}
+    [data-testid="stSidebar"] * {{
+        color: #FFFFFF !important;
+    }}
+    [data-testid="stSidebar"] .stButton > button {{
+        background: transparent;
+        border: 1px solid #FFFFFF;
+        color: #FFFFFF;
+        border-radius: 8px;
+    }}
+    [data-testid="stSidebar"] .stButton > button:hover {{
+        background: {MAGENTA};
+        border-color: {MAGENTA};
+    }}
+
+    /* Faixa superior magenta -> azul */
+    header[data-testid="stHeader"] {{
+        background: linear-gradient(90deg, {MAGENTA} 0%, {AZUL} 60%);
+    }}
+
+    /* Títulos em azul */
+    h1, h2, h3 {{
+        color: {AZUL} !important;
+    }}
+
+    /* Botões primários em magenta */
+    .stButton > button[kind="primary"],
+    .stFormSubmitButton > button {{
+        background: {MAGENTA};
+        border: none;
+        color: #FFFFFF;
+    }}
+    .stButton > button[kind="primary"]:hover,
+    .stFormSubmitButton > button:hover {{
+        background: {MAGENTA_HOVER};
+        color: #FFFFFF;
+    }}
+
+    /* Cards de métricas */
+    [data-testid="stMetric"] {{
+        background: {AZUL_CLARO};
+        border-left: 5px solid {MAGENTA};
+        border-radius: 10px;
+        padding: 10px 14px;
+    }}
+    [data-testid="stMetricLabel"] {{
+        color: {AZUL} !important;
+    }}
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+# ------------------------------------------------------------
 # Conexão Supabase
 # ------------------------------------------------------------
 @st.cache_resource
@@ -339,14 +407,21 @@ elif pagina == "📋 Extrato":
         st.info("Nenhum lançamento encontrado nesse período.")
     else:
         df["data_lancamento"] = pd.to_datetime(df["data_lancamento"]).dt.strftime("%d/%m/%Y")
+        df["situacao"] = df["pago"].map({True: "✅ Pago", False: "⏳ Pendente"})
 
-        m1, m2, m3 = st.columns(3)
-        m1.metric("Total no período", f"R$ {df['total'].sum():,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
-        m2.metric("Lançamentos (itens)", len(df))
-        m3.metric("Clientes", df["cliente"].nunique())
+        def fmt_moeda(v: float) -> str:
+            return f"R$ {v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+        total_pendente = df.loc[~df["pago"], "total"].sum()
+
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Total no período", fmt_moeda(df["total"].sum()))
+        m2.metric("⏳ Pendente", fmt_moeda(total_pendente))
+        m3.metric("Lançamentos (itens)", len(df))
+        m4.metric("Clientes", df["cliente"].nunique())
 
         st.dataframe(
-            df[["data_lancamento", "cliente", "produto", "quantidade", "preco_unitario", "total", "pedido_id"]],
+            df[["data_lancamento", "cliente", "produto", "quantidade", "preco_unitario", "total", "situacao", "pedido_id"]],
             hide_index=True,
             use_container_width=True,
             column_config={
@@ -356,9 +431,40 @@ elif pagina == "📋 Extrato":
                 "quantidade": st.column_config.NumberColumn("Qtde", format="%g"),
                 "preco_unitario": st.column_config.NumberColumn("Preço Unit.", format="R$ %.2f"),
                 "total": st.column_config.NumberColumn("Total", format="R$ %.2f"),
+                "situacao": st.column_config.TextColumn("Situação"),
                 "pedido_id": st.column_config.TextColumn("Pedido", width="small"),
             },
         )
+
+        # --- marcar pendentes como pagos ---
+        df_pend = df.loc[~df["pago"]]
+        if not df_pend.empty:
+            st.markdown("#### ⏳ Pendentes — marcar como pago")
+            pedidos_pend = (
+                df_pend.groupby(["pedido_id", "cliente", "data_lancamento"], as_index=False)
+                .agg(itens=("produto", lambda s: ", ".join(s)), total=("total", "sum"))
+                .sort_values("cliente")
+            )
+            for _, ped in pedidos_pend.iterrows():
+                p1, p2, p3, p4, p5 = st.columns([1.5, 1.2, 3, 1.2, 1.5])
+                p1.write(f"**{ped['cliente']}**")
+                p2.write(ped["data_lancamento"])
+                p3.write(ped["itens"])
+                p4.write(f"**{fmt_moeda(ped['total'])}**")
+                if p5.button("✔️ Marcar pago", key=f"pg_{ped['pedido_id']}"):
+                    sb.table("lancamentos").update(
+                        {"pago": True, "data_pagamento": hoje_br().isoformat()}
+                    ).eq("pedido_id", ped["pedido_id"]).execute()
+                    st.success(f"Pedido de {ped['cliente']} marcado como pago!")
+                    st.rerun()
+
+            if cliente_filtro != "Todos":
+                if st.button(f"✅ Marcar TODOS os pendentes de {cliente_filtro} como pagos", type="primary"):
+                    sb.table("lancamentos").update(
+                        {"pago": True, "data_pagamento": hoje_br().isoformat()}
+                    ).eq("cliente", cliente_filtro).eq("pago", False).execute()
+                    st.success(f"Todos os pendentes de {cliente_filtro} foram quitados!")
+                    st.rerun()
 
         # resumo por cliente
         if cliente_filtro == "Todos":
