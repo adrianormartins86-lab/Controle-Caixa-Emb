@@ -231,6 +231,33 @@ def clientes_existentes_no_historico() -> list[str]:
     dados = sb.table("lancamentos").select("cliente").eq("excluido", False).execute().data
     return sorted({d["cliente"] for d in dados})
 
+# Formas de pagamento aceitas
+FORMAS_PAGAMENTO = ["Dinheiro", "Pix", "Cartão Débito", "Cartão Crédito", "Bonificação"]
+
+@st.cache_data(ttl=300)
+def carregar_config() -> dict:
+    dados = sb.table("config").select("*").execute().data
+    return {d["chave"]: (d["valor"] or "") for d in dados}
+
+def salvar_config(chave: str, valor: str):
+    sb.table("config").upsert({"chave": chave, "valor": valor}).execute()
+    carregar_config.clear()
+
+def telefone_do_cliente(nome: str) -> str:
+    df = carregar_clientes(somente_ativos=False)
+    if df.empty or "telefone" not in df.columns:
+        return ""
+    achou = df.loc[df["nome"] == nome, "telefone"]
+    return (achou.iloc[0] or "") if not achou.empty else ""
+
+def link_whatsapp(telefone: str, mensagem: str) -> str:
+    # limpa tudo que não for dígito; assume DDI 55 (Brasil) se vier sem
+    digitos = "".join(c for c in str(telefone) if c.isdigit())
+    if digitos and not digitos.startswith("55"):
+        digitos = "55" + digitos
+    from urllib.parse import quote
+    return f"https://wa.me/{digitos}?text={quote(mensagem)}"
+
 
 # ------------------------------------------------------------
 # Navegação (menu conforme o perfil)
@@ -403,13 +430,17 @@ if pagina == "⚙️ Cadastros":
         st.markdown("**Novo cliente**")
         with st.form("form_cliente", clear_on_submit=True):
             nome_cli = st.text_input("Nome do cliente")
+            tel_cli = st.text_input("Telefone/WhatsApp", placeholder="43 99999-9999")
             salvar_cli = st.form_submit_button("➕ Cadastrar cliente", type="primary", use_container_width=True)
         if salvar_cli:
             if not nome_cli.strip():
                 st.warning("Informe o nome do cliente.")
             else:
                 try:
-                    sb.table("clientes").insert({"nome": nome_cli.strip().title()}).execute()
+                    sb.table("clientes").insert({
+                        "nome": nome_cli.strip().title(),
+                        "telefone": tel_cli.strip() or None,
+                    }).execute()
                     limpar_cache_clientes()
                     st.success(f"Cliente **{nome_cli.strip().title()}** cadastrado!")
                     st.rerun()
@@ -425,14 +456,18 @@ if pagina == "⚙️ Cadastros":
         if df_cli.empty:
             st.info("Nenhum cliente cadastrado.")
         else:
+            if "telefone" not in df_cli.columns:
+                df_cli["telefone"] = ""
+            df_cli["telefone"] = df_cli["telefone"].fillna("")
             df_cli_edit = st.data_editor(
-                df_cli[["id", "nome", "ativo"]],
+                df_cli[["id", "nome", "telefone", "ativo"]],
                 hide_index=True,
                 use_container_width=True,
                 disabled=["id"],
                 column_config={
                     "id": st.column_config.NumberColumn("ID", width="small"),
                     "nome": st.column_config.TextColumn("Cliente"),
+                    "telefone": st.column_config.TextColumn("Telefone/WhatsApp"),
                     "ativo": st.column_config.CheckboxColumn("Ativo"),
                 },
                 key="editor_clientes",
@@ -441,10 +476,14 @@ if pagina == "⚙️ Cadastros":
                 alterados = 0
                 for _, row in df_cli_edit.iterrows():
                     original = df_cli.loc[df_cli["id"] == row["id"]].iloc[0]
-                    if row["nome"] != original["nome"] or bool(row["ativo"]) != bool(original["ativo"]):
-                        sb.table("clientes").update(
-                            {"nome": str(row["nome"]).strip(), "ativo": bool(row["ativo"])}
-                        ).eq("id", int(row["id"])).execute()
+                    if (row["nome"] != original["nome"]
+                            or bool(row["ativo"]) != bool(original["ativo"])
+                            or str(row["telefone"]) != str(original["telefone"])):
+                        sb.table("clientes").update({
+                            "nome": str(row["nome"]).strip(),
+                            "telefone": str(row["telefone"]).strip() or None,
+                            "ativo": bool(row["ativo"]),
+                        }).eq("id", int(row["id"])).execute()
                         alterados += 1
                 limpar_cache_clientes()
                 if alterados:
@@ -452,6 +491,23 @@ if pagina == "⚙️ Cadastros":
                     st.rerun()
                 else:
                     st.info("Nenhuma alteração detectada.")
+
+    # --- configurações do Pix (para a mensagem de cobrança) ---
+    st.divider()
+    st.markdown("### ⚙️ Configuração da cobrança (Pix)")
+    cfg = carregar_config()
+    with st.form("form_config"):
+        colp1, colp2 = st.columns(2)
+        with colp1:
+            pix_chave = st.text_input("Chave Pix / número", value=cfg.get("pix_chave", ""))
+        with colp2:
+            pix_nome = st.text_input("Nome do recebedor", value=cfg.get("pix_nome", ""))
+        salvar_cfg = st.form_submit_button("💾 Salvar configuração", type="primary")
+    if salvar_cfg:
+        salvar_config("pix_chave", pix_chave.strip())
+        salvar_config("pix_nome", pix_nome.strip())
+        st.success("Configuração salva! Será usada nas mensagens de cobrança.")
+        st.rerun()
 
 
 # ============================================================
@@ -581,6 +637,7 @@ elif pagina == "🧾 Lançamento":
         )
 
         valor_pago_input = 0.0
+        forma_pgto = None
         if situacao == "💸 Parcial":
             valor_pago_input = st.number_input(
                 "Valor pago agora (R$)",
@@ -594,6 +651,11 @@ elif pagina == "🧾 Lançamento":
             falta = total_pedido - valor_pago_input
             st.caption(f"Ficará **devendo R$ {falta:.2f}** deste pedido.")
 
+        # Forma de pagamento aparece quando há recebimento agora (Pago ou Parcial).
+        # Pendente não pede forma - ela será escolhida no extrato, na hora de receber.
+        if situacao in ("✅ Pago", "💸 Parcial"):
+            forma_pgto = st.selectbox("Forma de pagamento", FORMAS_PAGAMENTO)
+
         col_s1, col_s2 = st.columns([1, 3])
         with col_s1:
             if st.button("✅ Salvar lançamento", type="primary", use_container_width=True):
@@ -604,6 +666,8 @@ elif pagina == "🧾 Lançamento":
                 else:
                     pedido_id = uuid.uuid4().hex[:8]
                     esta_pago = situacao == "✅ Pago"
+                    # Bonificação: pedido cortesia, marca como pago sem gerar cobrança
+                    eh_bonificacao = forma_pgto == "Bonificação"
 
                     # Distribui o valor pago do pedido entre as linhas (itens),
                     # proporcional ao total de cada item, para o somatório bater certo.
@@ -637,6 +701,7 @@ elif pagina == "🧾 Lançamento":
                             "data_lancamento": data_lanc.isoformat(),
                             "pago": esta_pago,
                             "valor_pago": valor_pago_por_item[idx],
+                            "forma_pagamento": forma_pgto if situacao in ("✅ Pago", "💸 Parcial") else None,
                             "data_pagamento": data_lanc.isoformat() if esta_pago else None,
                             "lancado_por": PERFIL,
                         }
@@ -806,8 +871,9 @@ elif pagina == "📋 Extrato":
         # ------------------------------------------------------------
         # Registrar / ajustar recebimento por pedido (somente administrador)
         # ------------------------------------------------------------
-        def registrar_pagamento_pedido(pedido_id: str, valor_recebido: float, df_ref: pd.DataFrame):
-            """Distribui o valor recebido entre as linhas do pedido e grava valor_pago/pago."""
+        def registrar_pagamento_pedido(pedido_id: str, valor_recebido: float, df_ref: pd.DataFrame,
+                                        forma: str | None = None):
+            """Distribui o valor recebido entre as linhas do pedido e grava valor_pago/pago/forma."""
             itens = df_ref.loc[df_ref["pedido_id"] == pedido_id].sort_values("id")
             restante = round(valor_recebido, 2)
             total_pedido = round(itens["total"].sum(), 2)
@@ -819,25 +885,29 @@ elif pagina == "📋 Extrato":
                 else:
                     pago_item = round(min(item["total"], restante), 2)
                     restante = round(restante - pago_item, 2)
-                sb.table("lancamentos").update({
+                update = {
                     "valor_pago": pago_item,
                     "pago": pago_item >= item["total"] - 0.001,
                     "data_pagamento": hoje_br().isoformat() if quitou_tudo else None,
-                }).eq("id", int(item["id"])).execute()
+                }
+                if forma:
+                    update["forma_pagamento"] = forma
+                sb.table("lancamentos").update(update).eq("id", int(item["id"])).execute()
 
         pedidos_abertos = df_ped.loc[df_ped["pendente"] > 0.001]
         if EH_ADMIN and not pedidos_abertos.empty:
             st.markdown("#### 💰 Receber / ajustar pagamento")
-            st.caption("Digite quanto o cliente já pagou no total do pedido. O sistema recalcula o pendente sozinho.")
+            st.caption("Escolha a forma, digite quanto o cliente pagou e salve. O sistema recalcula o pendente sozinho.")
 
             for _, ped in pedidos_abertos.iterrows():
                 pid = ped["pedido_id"]
                 with st.container(border=True):
-                    c1, c2, c3, c4, c5 = st.columns([1.6, 3, 1.3, 1.6, 1.3])
+                    c1, c2, c3, c4, c5, c6 = st.columns([1.5, 2.4, 1.1, 1.4, 1.5, 1.2])
                     c1.markdown(f"**{ped['cliente']}**  \n:gray[{ped['data_lancamento']}]")
                     c2.markdown(f"{ped['itens']}")
                     c3.markdown(f"Total  \n**{fmt_moeda(ped['total'])}**")
-                    novo_valor = c4.number_input(
+                    forma_sel = c4.selectbox("Forma", FORMAS_PAGAMENTO, key=f"fp_{pid}")
+                    novo_valor = c5.number_input(
                         "Valor pago (R$)",
                         min_value=0.0,
                         max_value=float(ped["total"]),
@@ -846,21 +916,21 @@ elif pagina == "📋 Extrato":
                         format="%.2f",
                         key=f"vp_{pid}",
                     )
-                    c5.markdown("<br>", unsafe_allow_html=True)
-                    if c5.button("💾 Salvar", key=f"save_{pid}", use_container_width=True):
-                        registrar_pagamento_pedido(pid, novo_valor, df_validos)
+                    c6.markdown("<br>", unsafe_allow_html=True)
+                    if c6.button("💾 Salvar", key=f"save_{pid}", use_container_width=True):
+                        registrar_pagamento_pedido(pid, novo_valor, df_validos, forma_sel)
                         if novo_valor >= ped["total"] - 0.001:
-                            st.success(f"Pedido de {ped['cliente']} quitado!")
+                            st.success(f"Pedido de {ped['cliente']} quitado ({forma_sel})!")
                         else:
                             falta = ped["total"] - novo_valor
-                            st.success(f"Registrado R$ {novo_valor:.2f} de {ped['cliente']} — resta R$ {falta:.2f}.")
+                            st.success(f"Registrado R$ {novo_valor:.2f} de {ped['cliente']} ({forma_sel}) — resta R$ {falta:.2f}.")
                         st.rerun()
 
-                    # botão rápido de quitar tudo
+                    # botão rápido de quitar tudo com a forma escolhida
                     if ped["pendente"] > 0.001:
-                        if c5.button("✔️ Quitar tudo", key=f"quit_{pid}", use_container_width=True):
-                            registrar_pagamento_pedido(pid, float(ped["total"]), df_validos)
-                            st.success(f"Pedido de {ped['cliente']} quitado!")
+                        if c6.button("✔️ Quitar tudo", key=f"quit_{pid}", use_container_width=True):
+                            registrar_pagamento_pedido(pid, float(ped["total"]), df_validos, forma_sel)
+                            st.success(f"Pedido de {ped['cliente']} quitado ({forma_sel})!")
                             st.rerun()
 
             if cliente_filtro != "Todos":
@@ -889,6 +959,110 @@ elif pagina == "📋 Extrato":
                         "pendente": st.column_config.NumberColumn("Devendo (R$)", format="R$ %.2f"),
                     },
                 )
+
+        # ------------------------------------------------------------
+        # Mensagem de cobrança por cliente (WhatsApp)
+        # ------------------------------------------------------------
+        if EH_ADMIN:
+            with st.expander("📱 Gerar cobrança (WhatsApp)"):
+                devedores = (
+                    df_validos.loc[df_validos["pendente"] > 0.001]
+                    .groupby("cliente")["pendente"].sum().sort_values(ascending=False)
+                )
+                if devedores.empty:
+                    st.info("Nenhum cliente com valor em aberto no período filtrado. 🎉")
+                else:
+                    cli_cobrar = st.selectbox("Cliente", devedores.index.tolist())
+                    cfg = carregar_config()
+                    pix_chave = cfg.get("pix_chave", "")
+                    pix_nome = cfg.get("pix_nome", "")
+
+                    # monta itens em aberto do cliente, por pedido/data
+                    itens_cli = df_validos.loc[
+                        (df_validos["cliente"] == cli_cobrar) & (df_validos["pendente"] > 0.001)
+                    ]
+                    linhas_msg = []
+                    for data_ped, sub in itens_cli.groupby("data_lancamento"):
+                        linhas_msg.append(f"\n{data_ped}")
+                        for _, r in sub.iterrows():
+                            linhas_msg.append(f"{int(r['quantidade'])} {r['produto']} {r['total']:.2f}".replace(".", ","))
+                    total_aberto = itens_cli["pendente"].sum()
+
+                    saudacao = f"Paz {cli_cobrar}!\nBoa tarde!\n\nSua conta se encontra em aberto do consumo:"
+                    corpo = "\n".join(linhas_msg)
+                    fecho = f"\n\nTotal em aberto: R$ {total_aberto:.2f}".replace(".", ",")
+                    if pix_chave:
+                        fecho += (f"\n\nSe puder realizar o pix na chave {pix_chave}"
+                                  + (f" ({pix_nome})" if pix_nome else "")
+                                  + " e mandar o comprovante, agradecemos.\nDeus abençoe!!")
+                    mensagem = saudacao + "\n" + corpo + fecho
+
+                    mensagem_editada = st.text_area("Mensagem (pode editar antes de enviar)", value=mensagem, height=260)
+
+                    tel = telefone_do_cliente(cli_cobrar)
+                    col_w1, col_w2 = st.columns([1, 3])
+                    if tel:
+                        col_w1.link_button("📲 Abrir no WhatsApp", link_whatsapp(tel, mensagem_editada), use_container_width=True)
+                    else:
+                        col_w1.caption("Sem telefone cadastrado")
+                        col_w2.caption("Cadastre o telefone do cliente na aba ⚙️ Cadastros para liberar o botão. Você ainda pode copiar o texto acima.")
+
+        # ------------------------------------------------------------
+        # Fechamento do dia (por forma de pgto / por produto / por cliente)
+        # ------------------------------------------------------------
+        if EH_ADMIN:
+            with st.expander("📑 Fechamento do período (resumos)"):
+                fmt = fmt_moeda
+
+                st.markdown("**💳 Recebido por forma de pagamento**")
+                recebidos = df_validos.loc[df_validos["valor_pago"] > 0.001].copy()
+                if recebidos.empty or "forma_pagamento" not in recebidos.columns:
+                    st.caption("Nenhum recebimento registrado no período.")
+                else:
+                    recebidos["forma_pagamento"] = recebidos["forma_pagamento"].fillna("(não informado)")
+                    por_forma = recebidos.groupby("forma_pagamento", as_index=False)["valor_pago"].sum()
+                    st.dataframe(
+                        por_forma, hide_index=True, use_container_width=True,
+                        column_config={
+                            "forma_pagamento": st.column_config.TextColumn("Forma"),
+                            "valor_pago": st.column_config.NumberColumn("Recebido", format="R$ %.2f"),
+                        },
+                    )
+                    st.caption(f"Total recebido: **{fmt(recebidos['valor_pago'].sum())}**")
+
+                st.divider()
+                st.markdown("**🍔 Consumo por produto**")
+                por_produto = df_validos.groupby("produto", as_index=False).agg(
+                    qtde=("quantidade", "sum"), total=("total", "sum")
+                ).sort_values("total", ascending=False)
+                st.dataframe(
+                    por_produto, hide_index=True, use_container_width=True,
+                    column_config={
+                        "produto": st.column_config.TextColumn("Produto"),
+                        "qtde": st.column_config.NumberColumn("Qtde", format="%d"),
+                        "total": st.column_config.NumberColumn("Total", format="R$ %.2f"),
+                    },
+                )
+                st.caption(f"Total do consumo: **{fmt(df_validos['total'].sum())}**")
+
+                st.divider()
+                st.markdown("**👥 A receber por cliente (em aberto)**")
+                a_receber = (
+                    df_validos.loc[df_validos["pendente"] > 0.001]
+                    .groupby("cliente", as_index=False)["pendente"].sum()
+                    .sort_values("pendente", ascending=False)
+                )
+                if a_receber.empty:
+                    st.caption("Nada em aberto. 🎉")
+                else:
+                    st.dataframe(
+                        a_receber, hide_index=True, use_container_width=True,
+                        column_config={
+                            "cliente": st.column_config.TextColumn("Cliente"),
+                            "pendente": st.column_config.NumberColumn("Deve", format="R$ %.2f"),
+                        },
+                    )
+                    st.caption(f"Total a receber: **{fmt(a_receber['pendente'].sum())}**")
 
         # exclusão LÓGICA de lançamento
         if EH_ADMIN and not df_validos.empty:
