@@ -683,11 +683,12 @@ elif pagina == "📋 Extrato":
         m4.metric("Clientes", df_validos["cliente"].nunique())
 
         st.dataframe(
-            df[["data_lancamento", "data_pagamento", "cliente", "evento", "produto", "obs_item", "quantidade",
+            df[["id", "data_lancamento", "data_pagamento", "cliente", "evento", "produto", "obs_item", "quantidade",
                 "preco_unitario", "total", "situacao", "observacao", "motivo_exclusao", "pedido_id"]],
             hide_index=True,
             use_container_width=True,
             column_config={
+                "id": st.column_config.NumberColumn("ID", format="%d", width="small"),
                 "data_lancamento": st.column_config.TextColumn("Data Lanç."),
                 "data_pagamento": st.column_config.TextColumn("Data Pgto"),
                 "cliente": st.column_config.TextColumn("Cliente"),
@@ -756,12 +757,24 @@ elif pagina == "📋 Extrato":
         if EH_ADMIN and not df_validos.empty:
             with st.expander("🗑️ Excluir um lançamento (correção)"):
                 ids = df_validos["id"].tolist()
-                id_excluir = st.selectbox("ID do lançamento", ids)
+                
+                # Função para deixar a lista de exclusão mais amigável
+                def formata_id_exclusao(id_val):
+                    linha_format = df_validos.loc[df_validos["id"] == id_val].iloc[0]
+                    return f"ID {id_val} | {linha_format['produto']} (x{linha_format['quantidade']}) - R$ {linha_format['total']:.2f}"
+
+                id_excluir = st.selectbox(
+                    "Selecione o lançamento para excluir", 
+                    ids,
+                    format_func=formata_id_exclusao
+                )
+                
                 linha = df_validos.loc[df_validos["id"] == id_excluir].iloc[0]
                 st.caption(
-                    f"{linha['data_lancamento']} — {linha['cliente']} — {linha['produto']} "
+                    f"**Lançamento selecionado:** {linha['data_lancamento']} — {linha['cliente']} — {linha['produto']} "
                     f"x{linha['quantidade']:g} — R$ {linha['total']:.2f}"
                 )
+                
                 motivo = st.text_input("Motivo da exclusão (obrigatório)")
                 if st.button("Confirmar exclusão", type="secondary"):
                     if not motivo.strip():
