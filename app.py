@@ -63,12 +63,12 @@ st.markdown(
     header[data-testid="stHeader"]::before {{
         content: "Controle de Caixa - Embaixada";
         position: absolute;
-        left: 50%;
+        left: 260px;
         top: 50%;
-        transform: translate(-50%, -50%);
+        transform: translateY(-50%);
         color: #FFFFFF;
-        font-size: 1.15rem;
-        font-weight: 700;
+        font-size: 2.1rem;
+        font-weight: 800;
         letter-spacing: 0.5px;
         white-space: nowrap;
         pointer-events: none;
@@ -375,8 +375,8 @@ MENU_ADMIN = ["🧾 Lançamento", "📋 Extrato", "📊 Resumo por cliente",
               "📱 Gerar Cobrança", "⚙️ Configurações"]
 
 with st.sidebar:
-    st.markdown("## Lanchonete" if TEM_LOGO else "## 🍔 Lanchonete")
     st.caption(f"👤 Perfil: **{PERFIL}**")
+    st.markdown("**menu:**")
     pagina = st.radio(
         "Menu",
         MENU_ADMIN if EH_ADMIN else MENU_USUARIO,
