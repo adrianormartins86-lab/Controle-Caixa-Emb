@@ -684,7 +684,7 @@ elif pagina == "📋 Extrato":
 
         st.dataframe(
             df[["id", "data_lancamento", "data_pagamento", "cliente", "evento", "produto", "obs_item", "quantidade",
-                "preco_unitario", "total", "situacao", "observacao", "motivo_exclusao", "pedido_id"]],
+                "preco_unitario", "total", "situacao", "observacao"]],
             hide_index=True,
             use_container_width=True,
             column_config={
@@ -700,8 +700,6 @@ elif pagina == "📋 Extrato":
                 "total": st.column_config.NumberColumn("Total", format="R$ %.2f"),
                 "situacao": st.column_config.TextColumn("Situação"),
                 "observacao": st.column_config.TextColumn("Obs. Pedido"),
-                "motivo_exclusao": st.column_config.TextColumn("Motivo Exclusão"),
-                "pedido_id": st.column_config.TextColumn("Pedido", width="small"),
             },
         )
 
