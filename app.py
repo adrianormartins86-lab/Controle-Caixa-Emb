@@ -4,6 +4,7 @@
 # ============================================================
 import uuid
 from datetime import date, datetime, timedelta
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -12,11 +13,17 @@ from supabase import create_client, Client
 
 TZ = ZoneInfo("America/Sao_Paulo")
 
+LOGO = "EMB.png"  # logo na raiz do repositório
+TEM_LOGO = Path(LOGO).exists()
+
 st.set_page_config(
     page_title="Lanchonete da Igreja",
-    page_icon="🍔",
+    page_icon=LOGO if TEM_LOGO else "🍔",  # ícone da aba do navegador
     layout="wide",
 )
+
+if TEM_LOGO:
+    st.logo(LOGO)  # logo no topo da sidebar
 
 # ------------------------------------------------------------
 # Tema Molicenter (azul / branco / magenta)
@@ -105,20 +112,45 @@ def hoje_br() -> date:
 # Login simples (senha única em st.secrets)
 # ------------------------------------------------------------
 def tela_login():
-    st.markdown("## 🍔 Lanchonete da Igreja")
-    st.caption("Sistema de lançamento de cobranças")
+    st.markdown("<br><br>", unsafe_allow_html=True)
+    col_esq, col_meio, col_dir = st.columns([1, 1.1, 1])
 
-    # st.form evita race condition no login (lição aprendida no Despesas-Comp)
-    with st.form("login_form"):
-        senha = st.text_input("Senha", type="password")
-        entrar = st.form_submit_button("Entrar", use_container_width=True, type="primary")
+    with col_meio:
+        with st.container(border=True):
+            if TEM_LOGO:
+                c_tit, c_logo = st.columns([4, 1])
+                with c_tit:
+                    st.markdown(
+                        f"<h3 style='text-align:center; margin-bottom:0;'>Lanchonete da Igreja</h3>"
+                        f"<p style='text-align:center; color:{AZUL}; font-size:0.8rem;'>"
+                        f"Sistema de Lançamento de Cobranças</p>",
+                        unsafe_allow_html=True,
+                    )
+                with c_logo:
+                    st.image(LOGO, width=60)
+            else:
+                st.markdown(
+                    f"<h3 style='text-align:center; margin-bottom:0;'>🍔 Lanchonete da Igreja</h3>"
+                    f"<p style='text-align:center; color:{AZUL}; font-size:0.8rem;'>"
+                    f"Sistema de Lançamento de Cobranças</p>",
+                    unsafe_allow_html=True,
+                )
 
-    if entrar:
-        if senha == st.secrets["APP_SENHA"]:
-            st.session_state["logado"] = True
-            st.rerun()
-        else:
-            st.error("Senha incorreta.")
+            st.divider()
+
+            # st.form evita race condition no login (lição aprendida no Despesas-Comp)
+            with st.form("login_form"):
+                senha = st.text_input("🔑 Senha de acesso:", type="password")
+                entrar = st.form_submit_button(
+                    "Entrar no Sistema", use_container_width=True, type="primary"
+                )
+
+            if entrar:
+                if senha == st.secrets["APP_SENHA"]:
+                    st.session_state["logado"] = True
+                    st.rerun()
+                else:
+                    st.error("Senha incorreta.")
 
 
 if not st.session_state.get("logado"):
@@ -171,7 +203,11 @@ def clientes_existentes() -> list[str]:
 # Navegação
 # ------------------------------------------------------------
 with st.sidebar:
-    st.markdown("## 🍔 Lanchonete")
+    if TEM_LOGO:
+        st.image(LOGO, width=90)
+        st.markdown("## Lanchonete")
+    else:
+        st.markdown("## 🍔 Lanchonete")
     pagina = st.radio(
         "Menu",
         ["🧾 Lançamento", "📋 Extrato", "🛒 Produtos"],
