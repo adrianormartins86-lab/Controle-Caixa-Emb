@@ -1228,6 +1228,72 @@ elif pagina == "📋 Extrato":
                 except Exception as e:
                     st.error(f"Erro no PDF: {e}")
 
+        # edição do cabeçalho do pedido (cliente / missão / data / observação)
+        if EH_ADMIN and not df_ped.empty:
+            with st.expander("✏️ Editar um pedido (cliente / missão / data / observação)"):
+                pids_ed = df_ped["pedido_id"].tolist()
+
+                def formata_pedido_edicao(pid):
+                    p = df_ped.loc[df_ped["pedido_id"] == pid].iloc[0]
+                    return f"{p['data_lancamento']} | {p['cliente']} | {p['evento']} | {p['itens']} — R$ {p['total']:.2f}"
+
+                pid_editar = st.selectbox(
+                    "Selecione o pedido para editar",
+                    pids_ed,
+                    format_func=formata_pedido_edicao,
+                    key="sel_editar_pedido",
+                )
+
+                ped_ed = df_ped.loc[df_ped["pedido_id"] == pid_editar].iloc[0]
+
+                # opções de missão e cliente
+                df_ev_ed = carregar_eventos(somente_ativos=False)
+                opcoes_missao = df_ev_ed["nome"].tolist() if not df_ev_ed.empty else []
+                if ped_ed["evento"] and ped_ed["evento"] not in opcoes_missao:
+                    opcoes_missao = [ped_ed["evento"]] + opcoes_missao
+
+                df_cli_ed = carregar_clientes(somente_ativos=False)
+                opcoes_cliente = df_cli_ed["nome"].tolist() if not df_cli_ed.empty else []
+                if ped_ed["cliente"] and ped_ed["cliente"] not in opcoes_cliente:
+                    opcoes_cliente = [ped_ed["cliente"]] + opcoes_cliente
+
+                with st.form("form_editar_pedido"):
+                    ec1, ec2 = st.columns(2)
+                    with ec1:
+                        novo_cliente = st.selectbox(
+                            "Cliente",
+                            opcoes_cliente,
+                            index=opcoes_cliente.index(ped_ed["cliente"]) if ped_ed["cliente"] in opcoes_cliente else 0,
+                        )
+                        nova_missao = st.selectbox(
+                            "Missão",
+                            opcoes_missao,
+                            index=opcoes_missao.index(ped_ed["evento"]) if ped_ed["evento"] in opcoes_missao else 0,
+                        )
+                    with ec2:
+                        # data atual do pedido (dd/mm/aaaa -> date)
+                        try:
+                            data_atual = datetime.strptime(ped_ed["data_lancamento"], "%d/%m/%Y").date()
+                        except Exception:
+                            data_atual = hoje_br()
+                        nova_data = st.date_input("Data", value=data_atual, format="DD/MM/YYYY")
+                        nova_obs = st.text_input(
+                            "Observação do pedido",
+                            value=ped_ed["observacao"] if pd.notna(ped_ed["observacao"]) and ped_ed["observacao"] else "",
+                        )
+
+                    salvar_ed = st.form_submit_button("💾 Salvar alterações", type="primary")
+
+                if salvar_ed:
+                    sb.table("lancamentos").update({
+                        "cliente": novo_cliente.strip().title(),
+                        "evento": nova_missao,
+                        "data_lancamento": nova_data.isoformat(),
+                        "observacao": nova_obs.strip() or None,
+                    }).eq("pedido_id", pid_editar).execute()
+                    st.success(f"Pedido de {novo_cliente} atualizado!")
+                    st.rerun()
+
         # exclusão LÓGICA por pedido (correção) - apaga o pedido inteiro
         if EH_ADMIN and not df_ped.empty:
             with st.expander("🗑️ Excluir um pedido (correção)"):
