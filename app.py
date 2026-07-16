@@ -1423,7 +1423,7 @@ elif pagina == "📱 Gerar Cobrança":
                     linhas_msg.append(f"{int(r['quantidade'])} {r['produto']} {valor_txt}")
             total_aberto = itens_cli["pendente"].sum()
 
-            saudacao = f"Paz {cli_cobrar}!\nBoa tarde!\n\nSua conta se encontra em aberto do consumo:"
+            saudacao = f"Paz {cli_cobrar}!\n\nSua conta se encontra em aberto do consumo:"
             corpo = "\n".join(linhas_msg)
             fecho = f"\n\nTotal em aberto: R$ {total_aberto:.2f}".replace(".", ",")
             if pix_chave:
