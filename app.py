@@ -105,6 +105,17 @@ st.markdown(
         color: {AZUL} !important;
     }}
 
+    /* O components.html usado para travar as datas cria um iframe de
+       altura zero; isso evita que ele deixe um espaco em branco na tela. */
+    .stElementContainer:has(iframe[height="0"]),
+    div[data-testid="stElementContainer"]:has(iframe[height="0"]) {{
+        height: 0 !important;
+        min-height: 0 !important;
+        margin: 0 !important;
+        padding: 0 !important;
+        overflow: hidden !important;
+    }}
+
     /* Titulo de secao (fica maior no celular) */
     .titulo-seccao {{
         color: {AZUL};
@@ -138,36 +149,79 @@ st.markdown(
 )
 
 # ------------------------------------------------------------
-# Bloqueio de digitação nos campos Data e Qtde
-# (no celular o teclado não sobe; calendário e botões +/- continuam funcionando)
+# Bloqueio de digitação: TODOS os campos de data + o campo Qtde
+#
+# Datas: o st.date_input não expõe aria-label no <input>, então a trava é
+# aplicada pelo container do widget (data-testid / data-baseweb), o que pega
+# todas as datas do app — lançamento, filtros do extrato e edição de pedido.
+# Um input readonly não abre o teclado do celular, mas continua recebendo
+# clique — por isso o calendário segue funcionando normalmente.
+#
+# Qtde: identificado pelo aria-label, para NÃO travar Preço unit. / Valor extra.
 # ------------------------------------------------------------
-CAMPOS_SEM_TECLADO = ["Data", "Qtde"]
+SELETORES_DATA = [
+    '[data-testid="stDateInput"] input',
+    '[data-testid="stDateInputField"] input',
+    '[data-baseweb="datepicker"] input',
+    '.stDateInput input',
+]
+ROTULOS_SEM_TECLADO = ["Qtde"]
 
 
-def bloquear_teclado(rotulos=None):
-    rotulos = rotulos or CAMPOS_SEM_TECLADO
-    lista = ", ".join(f'"{r}"' for r in rotulos)
+def bloquear_teclado():
+    """Injeta o JS que impede digitação nas datas e na quantidade.
+    Chamada uma única vez por execução, logo depois do menu."""
+    seletores = ", ".join(f"'{s}'" for s in SELETORES_DATA)
+    rotulos = ", ".join(f'"{r}"' for r in ROTULOS_SEM_TECLADO)
     components.html(
         f"""
         <script>
         const doc = window.parent.document;
-        const ALVOS = [{lista}];
+        const SELETORES = [{seletores}];
+        const ROTULOS = [{rotulos}];
+
+        function semTeclado(el) {{
+            // reaplicado sempre: o React remove o atributo ao redesenhar
+            el.setAttribute('readonly', 'readonly');
+            el.setAttribute('inputmode', 'none');
+            el.setAttribute('autocomplete', 'off');
+            el.style.caretColor = 'transparent';
+
+            // Alguns teclados de Android (SwiftKey, Gboard) ignoram o readonly.
+            // Barra a digitacao na origem — o clique que abre o calendario passa.
+            if (!el.dataset.semDigitacao) {{
+                el.addEventListener('keydown', e => {{
+                    // libera apenas Tab e Esc, para nao prender a navegacao
+                    if (e.key !== 'Tab' && e.key !== 'Escape') e.preventDefault();
+                }});
+                el.addEventListener('paste', e => e.preventDefault());
+                el.addEventListener('drop', e => e.preventDefault());
+                el.dataset.semDigitacao = '1';
+            }}
+        }}
+
         function travar() {{
+            SELETORES.forEach(sel => {{
+                doc.querySelectorAll(sel).forEach(semTeclado);
+            }});
             doc.querySelectorAll('input').forEach(el => {{
-                if (el.dataset.travado) return;
                 const rot = el.getAttribute('aria-label') || '';
-                if (ALVOS.includes(rot)) {{
-                    el.setAttribute('readonly', 'readonly');
-                    el.setAttribute('inputmode', 'none');
-                    el.style.caretColor = 'transparent';
-                }}
-                el.setAttribute('autocomplete', 'off');
+                if (ROTULOS.includes(rot)) semTeclado(el);
                 el.setAttribute('data-lpignore', 'true');
-                el.dataset.travado = '1';
             }});
         }}
+
         travar();
-        new MutationObserver(travar).observe(doc.body, {{childList: true, subtree: true}});
+
+        // o Streamlit redesenha a tela a cada interação -> reaplica,
+        // com debounce de 1 frame para não pesar
+        let agendado = false;
+        const obs = new MutationObserver(() => {{
+            if (agendado) return;
+            agendado = true;
+            requestAnimationFrame(() => {{ agendado = false; travar(); }});
+        }});
+        obs.observe(doc.body, {{childList: true, subtree: true}});
         </script>
         """,
         height=0,
@@ -542,6 +596,9 @@ with st.sidebar:
     if st.button("Sair", use_container_width=True):
         st.session_state.clear()
         st.rerun()
+
+# vale para todas as telas: nenhum campo de data aceita digitação
+bloquear_teclado()
 
 # ============================================================
 # TELA: CADASTROS (Produtos, Missões, Clientes)
@@ -919,8 +976,6 @@ elif pagina == "🧾 Lançamento":
     if st.session_state.get("flash"):
         st.success(st.session_state.pop("flash"))
 
-    bloquear_teclado()
-
     # --- dados do pedido ---
     df_ev = carregar_eventos(somente_ativos=True)
     lista_missoes = df_ev["nome"].tolist() if not df_ev.empty else ["Geral"]
@@ -949,7 +1004,7 @@ elif pagina == "🧾 Lançamento":
     # --- adicionar itens ao pedido ---
     st.markdown(
         "<hr class='regua-seccao'>"
-        "<div class='titulo-seccao'>🛒 Adicionar produto</div>",
+        "<div class='titulo-seccao'>🛒 Adicionar produto ao pedido</div>",
         unsafe_allow_html=True,
     )
     
