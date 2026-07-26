@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 from supabase import create_client, Client
 
 TZ = ZoneInfo("America/Sao_Paulo")
@@ -104,6 +105,22 @@ st.markdown(
         color: {AZUL} !important;
     }}
 
+    /* Titulo de secao (fica maior no celular) */
+    .titulo-seccao {{
+        color: {AZUL};
+        font-weight: 800;
+        font-size: 1.45rem;
+        margin: 0.2rem 0 0.6rem 0;
+    }}
+    @media (max-width: 640px) {{
+        .titulo-seccao {{ font-size: 1.75rem; }}
+    }}
+    .regua-seccao {{
+        border: none;
+        border-top: 3px solid {MAGENTA};
+        margin: 1.4rem 0 0.8rem 0;
+    }}
+
     /* Mascara os campos de senha SEM usar type="password".
        Assim o Chrome / Google Password Manager nao oferece gerar senha. */
     .st-key-campo_senha input,
@@ -119,6 +136,43 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
+
+# ------------------------------------------------------------
+# Bloqueio de digitação nos campos Data e Qtde
+# (no celular o teclado não sobe; calendário e botões +/- continuam funcionando)
+# ------------------------------------------------------------
+CAMPOS_SEM_TECLADO = ["Data", "Qtde"]
+
+
+def bloquear_teclado(rotulos=None):
+    rotulos = rotulos or CAMPOS_SEM_TECLADO
+    lista = ", ".join(f'"{r}"' for r in rotulos)
+    components.html(
+        f"""
+        <script>
+        const doc = window.parent.document;
+        const ALVOS = [{lista}];
+        function travar() {{
+            doc.querySelectorAll('input').forEach(el => {{
+                if (el.dataset.travado) return;
+                const rot = el.getAttribute('aria-label') || '';
+                if (ALVOS.includes(rot)) {{
+                    el.setAttribute('readonly', 'readonly');
+                    el.setAttribute('inputmode', 'none');
+                    el.style.caretColor = 'transparent';
+                }}
+                el.setAttribute('autocomplete', 'off');
+                el.setAttribute('data-lpignore', 'true');
+                el.dataset.travado = '1';
+            }});
+        }}
+        travar();
+        new MutationObserver(travar).observe(doc.body, {{childList: true, subtree: true}});
+        </script>
+        """,
+        height=0,
+    )
+
 
 # ------------------------------------------------------------
 # Conexão Supabase
@@ -854,6 +908,19 @@ elif pagina == "🧾 Lançamento":
     if "carrinho" not in st.session_state:
         st.session_state["carrinho"] = []
 
+    # Contadores usados para LIMPAR os campos: ao incrementar, os widgets recebem
+    # uma key nova e voltam ao valor default (é o jeito de "zerar" no Streamlit).
+    st.session_state.setdefault("n_pedido", 0)   # cliente, obs, situação
+    st.session_state.setdefault("n_item", 0)     # produto, qtde, preço, extra, obs do item
+    NP = st.session_state["n_pedido"]
+    NI = st.session_state["n_item"]
+
+    # mensagem do último salvamento (o st.rerun apagaria o st.success)
+    if st.session_state.get("flash"):
+        st.success(st.session_state.pop("flash"))
+
+    bloquear_teclado()
+
     # --- dados do pedido ---
     df_ev = carregar_eventos(somente_ativos=True)
     lista_missoes = df_ev["nome"].tolist() if not df_ev.empty else ["Geral"]
@@ -868,62 +935,87 @@ elif pagina == "🧾 Lançamento":
     with col_ev:
         missao_sel = st.selectbox("🎪 Missão", lista_missoes)
     with col_a:
-        cliente_sel = st.selectbox("Cliente", lista_clientes, help="Escolha um cliente previamente cadastrado.")
+        cliente_sel = st.selectbox(
+            "Cliente",
+            lista_clientes,
+            index=None,
+            placeholder="Escolha...",
+            key=f"sel_cliente_{NP}",
+            help="Escolha um cliente previamente cadastrado.",
+        )
     with col_b:
         data_lanc = st.date_input("Data", value=hoje_br(), format="DD/MM/YYYY")
 
-    st.divider()
-
     # --- adicionar itens ao pedido ---
-    st.markdown("**Adicionar produto ao pedido**")
+    st.markdown(
+        "<hr class='regua-seccao'>"
+        "<div class='titulo-seccao'>🛒 Adicionar produto ao pedido</div>",
+        unsafe_allow_html=True,
+    )
     
     # Adicionamos mais uma coluna (c_extra) e reajustamos os tamanhos para caber tudo
     c1, c2, c3, c_extra, c4, c5 = st.columns([2.0, 0.7, 1.1, 1.1, 2.0, 1.1])
     with c1:
-        produto_sel = st.selectbox("Produto", df_prod["nome"].tolist(), key="sel_produto")
+        produto_sel = st.selectbox(
+            "Produto",
+            df_prod["nome"].tolist(),
+            index=None,
+            placeholder="Escolha...",
+            key=f"sel_produto_{NI}",
+        )
     with c2:
-        qtde = st.number_input("Qtde", min_value=1, value=1, step=1, key="inp_qtde")
+        # somente os botões - e + (a digitação é bloqueada por bloquear_teclado)
+        qtde = st.number_input("Qtde", min_value=1, value=1, step=1, key=f"inp_qtde_{NI}")
     with c3:
-        preco_padrao = precos.get(produto_sel, 0.0)
+        preco_padrao = float(precos.get(produto_sel, 0.0)) if produto_sel else 0.0
         preco_unit = st.number_input(
             "Preço unit. (R$)",
             min_value=0.0,
             value=preco_padrao,
             step=0.50,
             format="%.2f",
-            key=f"inp_preco_{produto_sel}",
+            key=f"inp_preco_{NI}_{produto_sel}",
+            disabled=not EH_ADMIN,
+            help=None if EH_ADMIN
+            else "Preço travado. Somente Administrador e Meiry podem alterar.",
         )
     with c_extra:
+        # liberado para todos os perfis, por causa das exceções (bacon, borda...)
         preco_extra = st.number_input(
             "Valor extra (R$)",
             min_value=0.0,
             value=0.0,
             step=0.50,
             format="%.2f",
-            key=f"inp_extra_{produto_sel}",
+            key=f"inp_extra_{NI}_{produto_sel}",
             help="Bacon, borda recheada, etc."
         )
     with c4:
         obs_item = st.text_input(
             "Obs. do item",
-            key="inp_obs_item",
+            key=f"inp_obs_item_{NI}",
             placeholder="Ex: com bacon...",
         )
     with c5:
         st.markdown("<br>", unsafe_allow_html=True)
         if st.button("➕ Adicionar", use_container_width=True):
-            st.session_state["carrinho"].append(
-                {
-                    "produto": produto_sel,
-                    "quantidade": int(qtde),
-                    "preco_unitario": preco_unit,
-                    "preco_extra": preco_extra,
-                    "obs_item": obs_item.strip(),
-                    # O total já calcula o preço unitário + o valor extra
-                    "total": round(qtde * (preco_unit + preco_extra), 2),
-                }
-            )
-            st.rerun()
+            if not produto_sel:
+                st.warning("Escolha um produto antes de adicionar.")
+            else:
+                st.session_state["carrinho"].append(
+                    {
+                        "produto": produto_sel,
+                        "quantidade": int(qtde),
+                        "preco_unitario": preco_unit,
+                        "preco_extra": preco_extra,
+                        "obs_item": obs_item.strip(),
+                        # O total já calcula o preço unitário + o valor extra
+                        "total": round(qtde * (preco_unit + preco_extra), 2),
+                    }
+                )
+                # o item já foi para a lista abaixo -> limpa os campos de cima
+                st.session_state["n_item"] += 1
+                st.rerun()
 
     # --- carrinho ---
     carrinho = st.session_state["carrinho"]
@@ -952,6 +1044,7 @@ elif pagina == "🧾 Lançamento":
         observacao = st.text_input(
             "Observação do pedido (opcional)",
             placeholder="Ex.: pagar na sexta, entregar na mesa 3...",
+            key=f"inp_obs_pedido_{NP}",
         )
 
         total_pedido = df_car["total"].sum()
@@ -962,6 +1055,7 @@ elif pagina == "🧾 Lançamento":
             ["✅ Pago", "⏳ Pendente", "💸 Parcial"],
             horizontal=True,
             help="Parcial: cliente pagou só uma parte agora; o restante fica como pendente no extrato.",
+            key=f"rad_situacao_{NP}",
         )
 
         valor_pago_input = 0.0
@@ -975,6 +1069,7 @@ elif pagina == "🧾 Lançamento":
                 step=0.50,
                 format="%.2f",
                 help=f"Total do pedido: R$ {total_pedido:.2f}. O que faltar vira pendente.",
+                key=f"inp_parcial_{NP}",
             )
             falta = total_pedido - valor_pago_input
             st.caption(f"Ficará **devendo R$ {falta:.2f}** deste pedido.")
@@ -982,13 +1077,15 @@ elif pagina == "🧾 Lançamento":
         # Forma de pagamento aparece quando há recebimento agora (Pago ou Parcial).
         # Pendente não pede forma - ela será escolhida no extrato, na hora de receber.
         if situacao in ("✅ Pago", "💸 Parcial"):
-            forma_pgto = st.selectbox("Forma de pagamento", FORMAS_PAGAMENTO)
+            forma_pgto = st.selectbox(
+                "Forma de pagamento", FORMAS_PAGAMENTO, key=f"sel_forma_{NP}"
+            )
 
         col_s1, col_s2 = st.columns([1, 3])
         with col_s1:
             if st.button("✅ Salvar lançamento", type="primary", use_container_width=True):
-                if not cliente_sel or not cliente_sel.strip():
-                    st.error("Selecione um cliente.")
+                if not cliente_sel:
+                    st.error("Selecione um cliente antes de salvar.")
                 elif situacao == "💸 Parcial" and valor_pago_input <= 0:
                     st.error("Informe o valor pago (maior que zero) ou escolha Pendente.")
                 else:
@@ -1037,14 +1134,21 @@ elif pagina == "🧾 Lançamento":
                     ]
                     try:
                         sb.table("lancamentos").insert(linhas).execute()
+                        # volta a tela ao inicio: sem cliente, sem produto, sem itens
                         st.session_state["carrinho"] = []
-                        st.success(f"Lançamento salvo para **{cliente_sel.strip().title()}**! 🎉")
+                        st.session_state["n_pedido"] += 1
+                        st.session_state["n_item"] += 1
+                        st.session_state["flash"] = (
+                            f"Lançamento salvo para **{cliente_sel.strip().title()}** "
+                            f"— R$ {total_pedido:.2f}. 🎉"
+                        )
                         st.rerun()
                     except Exception as e:
                         st.error(f"Erro ao salvar: {e}")
         with col_s2:
             if st.button("🧹 Limpar itens"):
                 st.session_state["carrinho"] = []
+                st.session_state["n_item"] += 1
                 st.rerun()
     else:
         st.info("Nenhum item adicionado ainda. Escolha um produto acima e clique em **Adicionar**.")
