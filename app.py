@@ -953,7 +953,10 @@ if pagina == "⚙️ Configurações":
 # TELA: LANÇAMENTO
 # ============================================================
 elif pagina == "🧾 Lançamento":
-    st.markdown("### 🧾 Novo Lançamento")
+    st.markdown(
+        "<div class='titulo-seccao'>🧾 Novo Lançamento</div>",
+        unsafe_allow_html=True,
+    )
 
     df_prod = carregar_produtos(somente_ativos=True)
     if df_prod.empty:
