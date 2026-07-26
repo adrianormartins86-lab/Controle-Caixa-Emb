@@ -761,7 +761,7 @@ if pagina == "⚙️ Configurações":
 
     # --- missões (no DB a tabela chama 'eventos') ---
     st.divider()
-    st.markdown("### 🎪 Missões")
+    st.markdown("### 🎯 Missões")
     ce1, ce2 = st.columns([1, 2])
 
     with ce1:
@@ -991,7 +991,7 @@ elif pagina == "🧾 Lançamento":
 
     col_ev, col_a, col_b = st.columns([1.2, 2, 1])
     with col_ev:
-        missao_sel = st.selectbox("🎪 Missão", lista_missoes)
+        missao_sel = st.selectbox("🎯 Missão", lista_missoes)
     with col_a:
         cliente_sel = st.selectbox(
             "Cliente",
@@ -1489,7 +1489,7 @@ elif pagina == "📋 Extrato":
 
                 # Consumo por missão
                 st.divider()
-                st.markdown("**🎪 Consumo por missão**")
+                st.markdown("**🎯 Consumo por missão**")
                 por_missao = df_validos.groupby("evento", as_index=False)["total"].sum().sort_values("total", ascending=False)
                 total_missao = df_validos["total"].sum()
                 por_missao_pdf = list(por_missao.itertuples(index=False, name=None))
