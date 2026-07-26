@@ -4,6 +4,7 @@
 # ============================================================
 import hashlib
 import uuid
+from html import escape as escapar_html
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -125,6 +126,45 @@ st.markdown(
         [data-testid="stTextArea"],
         [data-testid="stRadio"] {{
             scroll-margin-top: 5rem;
+        }}
+    }}
+
+    /* Linha do carrinho: produto, qtde, unitário e total lado a lado */
+    .linha-item {{
+        display: flex;
+        align-items: center;
+        gap: 0.6rem;
+        white-space: nowrap;
+        line-height: 1.35;
+    }}
+    .linha-item .li-prod {{
+        flex: 1 1 auto;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        font-weight: 600;
+    }}
+    .linha-item .li-qtd,
+    .linha-item .li-uni {{ flex: 0 0 auto; opacity: 0.75; }}
+    .linha-item .li-tot {{ flex: 0 0 auto; font-weight: 800; color: {AZUL}; }}
+    .obs-item {{
+        font-size: 0.78rem;
+        opacity: 0.65;
+        font-style: italic;
+        margin-top: -0.2rem;
+    }}
+
+    /* No celular o Streamlit empilha as colunas; aqui força a linha única.
+       O :has() mira só nos blocos que contêm um item do carrinho. */
+    @media (max-width: 640px) {{
+        .linha-item {{ font-size: 0.88rem; gap: 0.4rem; }}
+        [data-testid="stHorizontalBlock"]:has(.linha-item) {{
+            flex-wrap: nowrap !important;
+            gap: 0.3rem !important;
+            align-items: center;
+        }}
+        [data-testid="stHorizontalBlock"]:has(.linha-item) [data-testid="stColumn"] {{
+            min-width: 0 !important;
         }}
     }}
 
@@ -1190,26 +1230,42 @@ elif pagina == "🧾 Lançamento":
     # --- carrinho ---
     carrinho = st.session_state["carrinho"]
     if carrinho:
-        st.markdown("**Itens do pedido:**")
-        df_car = pd.DataFrame(carrinho)
+        st.markdown(
+            "<hr class='regua-seccao'>"
+            "<div class='titulo-seccao' id='sec-itens'>📦 Itens do pedido</div>",
+            unsafe_allow_html=True,
+        )
+        df_car = pd.DataFrame(carrinho)   # usado no total do pedido, mais abaixo
+
         for i, item in enumerate(carrinho):
-            ic1, ic2, ic3, ic4, ic5 = st.columns([3, 1, 1.5, 1.5, 0.7])
-            rotulo = item["produto"]
-            if item.get("obs_item"):
-                rotulo += f"  \n:gray[_{item['obs_item']}_]"
-            ic1.markdown(rotulo)
-            ic2.write(f"x {item['quantidade']}")
-            
-            # Mostra o valor extra na tela do carrinho de forma elegante
-            if item.get("preco_extra", 0) > 0:
-                ic3.write(f"R$ {item['preco_unitario']:.2f}  \n*(+ R$ {item['preco_extra']:.2f})*")
-            else:
-                ic3.write(f"R$ {item['preco_unitario']:.2f}")
-                
-            ic4.write(f"**R$ {item['total']:.2f}**")
-            if ic5.button("🗑️", key=f"del_{i}"):
-                carrinho.pop(i)
-                st.rerun()
+            # duas colunas apenas: a linha completa + a lixeira.
+            # o CSS acima impede que elas empilhem no celular.
+            ic_linha, ic_lixo = st.columns([9, 1.2])
+
+            extra = (
+                f" <span class='li-uni'>(+{item['preco_extra']:.2f})</span>"
+                if item.get("preco_extra", 0) > 0
+                else ""
+            )
+            with ic_linha:
+                st.markdown(
+                    "<div class='linha-item'>"
+                    f"<span class='li-prod'>{escapar_html(item['produto'])}</span>"
+                    f"<span class='li-qtd'>x{item['quantidade']}</span>"
+                    f"<span class='li-uni'>R$ {item['preco_unitario']:.2f}{extra}</span>"
+                    f"<span class='li-tot'>R$ {item['total']:.2f}</span>"
+                    "</div>"
+                    + (
+                        f"<div class='obs-item'>{escapar_html(item['obs_item'])}</div>"
+                        if item.get("obs_item")
+                        else ""
+                    ),
+                    unsafe_allow_html=True,
+                )
+            with ic_lixo:
+                if st.button("🗑️", key=f"del_{i}", help="Remover este item"):
+                    carrinho.pop(i)
+                    st.rerun()
 
         observacao = st.text_input(
             "Observação do pedido (opcional)",
