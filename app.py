@@ -1,5 +1,5 @@
 # ============================================================
-# Lanchonete da Igreja - Lançamento de Cobranças
+# Gerenciamento de Caixa - Lançamento de Cobranças
 # Streamlit + Supabase
 # ============================================================
 import hashlib
@@ -19,7 +19,7 @@ LOGO = "EMB.png"  # logo na raiz do repositório
 TEM_LOGO = Path(LOGO).exists()
 
 st.set_page_config(
-    page_title="Lanchonete da Igreja",
+    page_title="Gerenciamento de Caixa",
     page_icon=LOGO if TEM_LOGO else "🍔",  # ícone da aba do navegador
     layout="wide",
 )
@@ -276,7 +276,7 @@ def tela_login():
                 c_tit, c_logo = st.columns([4, 1])
                 with c_tit:
                     st.markdown(
-                        f"<h3 style='text-align:center; margin-bottom:0;'>Lanchonete da Igreja</h3>"
+                        f"<h3 style='text-align:center; margin-bottom:0;'>Gerenciamento de Caixa</h3>"
                         f"<p style='text-align:center; color:{AZUL}; font-size:0.8rem;'>"
                         f"Sistema de Lançamento de Cobranças</p>",
                         unsafe_allow_html=True,
@@ -285,7 +285,7 @@ def tela_login():
                     st.image(LOGO, width=60)
             else:
                 st.markdown(
-                    f"<h3 style='text-align:center; margin-bottom:0;'>🍔 Lanchonete da Igreja</h3>"
+                    f"<h3 style='text-align:center; margin-bottom:0;'>🍔 Gerenciamento de Caixa</h3>"
                     f"<p style='text-align:center; color:{AZUL}; font-size:0.8rem;'>"
                     f"Sistema de Lançamento de Cobranças</p>",
                     unsafe_allow_html=True,
@@ -545,14 +545,14 @@ def gerar_pdf_fechamento(periodo_txt, por_forma, total_receb, por_produto,
     if TEM_LOGO:
         try:
             cab = Table([[RLImage(LOGO, width=16 * mm, height=16 * mm),
-                          Paragraph("Fechamento — Lanchonete da Igreja", titulo)]],
+                          Paragraph("Fechamento — Gerenciamento de Caixa", titulo)]],
                         colWidths=[20 * mm, None])
             cab.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE")]))
             elems.append(cab)
         except Exception:
-            elems.append(Paragraph("Fechamento — Lanchonete da Igreja", titulo))
+            elems.append(Paragraph("Fechamento — Gerenciamento de Caixa", titulo))
     else:
-        elems.append(Paragraph("Fechamento — Lanchonete da Igreja", titulo))
+        elems.append(Paragraph("Fechamento — Gerenciamento de Caixa", titulo))
     elems.append(Paragraph(periodo_txt, sub))
     elems.append(Spacer(1, 6))
 
