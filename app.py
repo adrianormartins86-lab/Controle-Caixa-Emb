@@ -2,6 +2,7 @@
 # Lanchonete da Igreja - Lançamento de Cobranças
 # Streamlit + Supabase
 # ============================================================
+import hashlib
 import uuid
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -102,6 +103,18 @@ st.markdown(
     [data-testid="stMetricLabel"] {{
         color: {AZUL} !important;
     }}
+
+    /* Mascara os campos de senha SEM usar type="password".
+       Assim o Chrome / Google Password Manager nao oferece gerar senha. */
+    .st-key-campo_senha input,
+    .st-key-campo_nova_senha input,
+    .st-key-campo_reset_senha input,
+    input[aria-label*="Senha de acesso"],
+    input[aria-label*="Senha inicial"],
+    input[aria-label*="Nova senha"] {{
+        -webkit-text-security: disc;
+        text-security: disc;
+    }}
     </style>
     """,
     unsafe_allow_html=True,
@@ -120,9 +133,31 @@ def get_supabase() -> Client:
 def hoje_br() -> date:
     return datetime.now(TZ).date()
 
+
+# a conexao precisa existir antes do login, porque o login le a tabela 'usuarios'
+sb = get_supabase()
+
 # ------------------------------------------------------------
-# Login simples (senha única em st.secrets)
+# Login por usuário (tabela 'usuarios' no Supabase)
 # ------------------------------------------------------------
+def gerar_hash(senha: str) -> str:
+    """SHA-256 da senha + pepper guardado no st.secrets."""
+    pepper = st.secrets.get("SENHA_PEPPER", "emb-lanchonete-2026")
+    return hashlib.sha256((pepper + senha).encode("utf-8")).hexdigest()
+
+
+@st.cache_data(ttl=30)
+def carregar_usuarios(somente_ativos: bool = True) -> pd.DataFrame:
+    q = sb.table("usuarios").select("*").order("nome")
+    if somente_ativos:
+        q = q.eq("ativo", True)
+    return pd.DataFrame(q.execute().data)
+
+
+def limpar_cache_usuarios():
+    carregar_usuarios.clear()
+
+
 def tela_login():
     st.markdown("<br><br>", unsafe_allow_html=True)
     col_esq, col_meio, col_dir = st.columns([1, 1.1, 1])
@@ -150,20 +185,32 @@ def tela_login():
 
             st.divider()
 
+            try:
+                df_users = carregar_usuarios(somente_ativos=True)
+            except Exception as e:
+                st.error(f"Erro ao ler a tabela de usuários: {e}")
+                st.stop()
+
+            if df_users.empty:
+                st.error(
+                    "Nenhum usuário ativo cadastrado. "
+                    "Rode o SQL de criação da tabela `usuarios` no Supabase."
+                )
+                st.stop()
+
             with st.form("login_form"):
-                senha = st.text_input("🔑 Senha de acesso:", type="password")
+                nome_sel = st.selectbox("👤 Usuário:", df_users["nome"].tolist())
+                senha = st.text_input("🔑 Senha de acesso:", key="campo_senha")
                 entrar = st.form_submit_button(
                     "Entrar no Sistema", use_container_width=True, type="primary"
                 )
 
             if entrar:
-                if senha == st.secrets["SENHA_ADMIN"]:
+                linha = df_users.loc[df_users["nome"] == nome_sel]
+                if not linha.empty and linha.iloc[0]["senha_hash"] == gerar_hash(senha):
                     st.session_state["logado"] = True
-                    st.session_state["perfil"] = "Administrador"
-                    st.rerun()
-                elif senha == st.secrets["SENHA_USUARIO"]:
-                    st.session_state["logado"] = True
-                    st.session_state["perfil"] = "Usuário"
+                    st.session_state["usuario"] = nome_sel
+                    st.session_state["perfil"] = linha.iloc[0]["perfil"]
                     st.rerun()
                 else:
                     st.error("Senha incorreta.")
@@ -173,10 +220,16 @@ if not st.session_state.get("logado"):
     tela_login()
     st.stop()
 
-PERFIL = st.session_state.get("perfil", "Usuário")
-EH_ADMIN = PERFIL == "Administrador"
+USUARIO = st.session_state.get("usuario", "")
+PERFIL = st.session_state.get("perfil", "operador")
 
-sb = get_supabase()
+# admin  -> tudo, inclusive gerenciar usuários
+# gestor -> tudo, menos gerenciar usuários
+# operador -> lançamento, extrato e cadastro de clientes
+EH_ADMIN = PERFIL in ("admin", "gestor")
+PODE_USUARIOS = PERFIL == "admin"
+
+AGORA = lambda: datetime.now(TZ).isoformat()
 
 # ------------------------------------------------------------
 # Funções de dados
@@ -417,12 +470,14 @@ def gerar_pdf_fechamento(periodo_txt, por_forma, total_receb, por_produto,
 # ------------------------------------------------------------
 # Navegação (menu conforme o perfil)
 # ------------------------------------------------------------
-MENU_USUARIO = ["🧾 Lançamento", "📋 Extrato"]
+# todos veem "Configurações", mas dentro dela só o cadastro de clientes
+# fica liberado para o perfil operador.
+MENU_USUARIO = ["🧾 Lançamento", "📋 Extrato", "⚙️ Configurações"]
 MENU_ADMIN = ["🧾 Lançamento", "📋 Extrato", "📊 Resumo por cliente",
               "📱 Gerar Cobrança", "⚙️ Configurações"]
 
 with st.sidebar:
-    st.caption(f"👤 Perfil: **{PERFIL}**")
+    st.caption(f"👤 Conectado como **{USUARIO}**")
     st.markdown("**menu:**")
     pagina = st.radio(
         "Menu",
@@ -438,10 +493,86 @@ with st.sidebar:
 # TELA: CADASTROS (Produtos, Missões, Clientes)
 # ============================================================
 if pagina == "⚙️ Configurações":
+
+    # ------------------------------------------------------------
+    # Clientes — LIBERADO PARA TODOS OS USUÁRIOS
+    # ------------------------------------------------------------
+    st.markdown("### 👥 Clientes")
+    cc1, cc2 = st.columns([1, 2])
+
+    with cc1:
+        st.markdown("**Novo cliente**")
+        with st.form("form_cliente", clear_on_submit=True):
+            nome_cli = st.text_input("Nome do cliente")
+            tel_cli = st.text_input("Telefone/WhatsApp", placeholder="43 99999-9999")
+            salvar_cli = st.form_submit_button("➕ Cadastrar cliente", type="primary", use_container_width=True)
+        if salvar_cli:
+            if not nome_cli.strip():
+                st.warning("Informe o nome do cliente.")
+            else:
+                try:
+                    sb.table("clientes").insert({
+                        "nome": nome_cli.strip().title(),
+                        "telefone": tel_cli.strip() or None,
+                    }).execute()
+                    limpar_cache_clientes()
+                    st.success(f"Cliente **{nome_cli.strip().title()}** cadastrado!")
+                    st.rerun()
+                except Exception as e:
+                    if "duplicate" in str(e).lower() or "unique" in str(e).lower():
+                        st.error("Já existe um cliente com esse nome.")
+                    else:
+                        st.error(f"Erro ao cadastrar: {e}")
+
+    with cc2:
+        st.markdown("**Clientes cadastrados**")
+        df_cli = carregar_clientes(somente_ativos=False)
+        if df_cli.empty:
+            st.info("Nenhum cliente cadastrado.")
+        else:
+            if "telefone" not in df_cli.columns:
+                df_cli["telefone"] = ""
+            df_cli["telefone"] = df_cli["telefone"].fillna("")
+            df_cli_edit = st.data_editor(
+                df_cli[["id", "nome", "telefone", "ativo"]],
+                hide_index=True,
+                use_container_width=True,
+                disabled=["id"],
+                column_config={
+                    "id": st.column_config.NumberColumn("ID", width="small"),
+                    "nome": st.column_config.TextColumn("Cliente"),
+                    "telefone": st.column_config.TextColumn("Telefone/WhatsApp"),
+                    "ativo": st.column_config.CheckboxColumn("Ativo"),
+                },
+                key="editor_clientes",
+            )
+            if st.button("💾 Salvar clientes", key="btn_salvar_clientes"):
+                alterados = 0
+                for _, row in df_cli_edit.iterrows():
+                    original = df_cli.loc[df_cli["id"] == row["id"]].iloc[0]
+                    if (row["nome"] != original["nome"]
+                            or bool(row["ativo"]) != bool(original["ativo"])
+                            or str(row["telefone"]) != str(original["telefone"])):
+                        sb.table("clientes").update({
+                            "nome": str(row["nome"]).strip(),
+                            "telefone": str(row["telefone"]).strip() or None,
+                            "ativo": bool(row["ativo"]),
+                        }).eq("id", int(row["id"])).execute()
+                        alterados += 1
+                limpar_cache_clientes()
+                if alterados:
+                    st.success(f"{alterados} cliente(s) atualizado(s)!")
+                    st.rerun()
+                else:
+                    st.info("Nenhuma alteração detectada.")
+
+    # ------------------------------------------------------------
+    # Daqui para baixo: só Administrador / Meiry (perfil admin ou gestor)
+    # ------------------------------------------------------------
     if not EH_ADMIN:
-        st.warning("Acesso restrito ao administrador.")
         st.stop()
 
+    st.divider()
     st.markdown("### 🛒 Cadastro de Produtos")
 
     col1, col2 = st.columns([1, 2])
@@ -577,77 +708,6 @@ if pagina == "⚙️ Configurações":
                     st.info("Nenhuma alteração detectada.")
 
 
-    # --- clientes ---
-    st.divider()
-    st.markdown("### 👥 Clientes")
-    cc1, cc2 = st.columns([1, 2])
-
-    with cc1:
-        st.markdown("**Novo cliente**")
-        with st.form("form_cliente", clear_on_submit=True):
-            nome_cli = st.text_input("Nome do cliente")
-            tel_cli = st.text_input("Telefone/WhatsApp", placeholder="43 99999-9999")
-            salvar_cli = st.form_submit_button("➕ Cadastrar cliente", type="primary", use_container_width=True)
-        if salvar_cli:
-            if not nome_cli.strip():
-                st.warning("Informe o nome do cliente.")
-            else:
-                try:
-                    sb.table("clientes").insert({
-                        "nome": nome_cli.strip().title(),
-                        "telefone": tel_cli.strip() or None,
-                    }).execute()
-                    limpar_cache_clientes()
-                    st.success(f"Cliente **{nome_cli.strip().title()}** cadastrado!")
-                    st.rerun()
-                except Exception as e:
-                    if "duplicate" in str(e).lower() or "unique" in str(e).lower():
-                        st.error("Já existe um cliente com esse nome.")
-                    else:
-                        st.error(f"Erro ao cadastrar: {e}")
-
-    with cc2:
-        st.markdown("**Clientes cadastrados**")
-        df_cli = carregar_clientes(somente_ativos=False)
-        if df_cli.empty:
-            st.info("Nenhum cliente cadastrado.")
-        else:
-            if "telefone" not in df_cli.columns:
-                df_cli["telefone"] = ""
-            df_cli["telefone"] = df_cli["telefone"].fillna("")
-            df_cli_edit = st.data_editor(
-                df_cli[["id", "nome", "telefone", "ativo"]],
-                hide_index=True,
-                use_container_width=True,
-                disabled=["id"],
-                column_config={
-                    "id": st.column_config.NumberColumn("ID", width="small"),
-                    "nome": st.column_config.TextColumn("Cliente"),
-                    "telefone": st.column_config.TextColumn("Telefone/WhatsApp"),
-                    "ativo": st.column_config.CheckboxColumn("Ativo"),
-                },
-                key="editor_clientes",
-            )
-            if st.button("💾 Salvar clientes", key="btn_salvar_clientes"):
-                alterados = 0
-                for _, row in df_cli_edit.iterrows():
-                    original = df_cli.loc[df_cli["id"] == row["id"]].iloc[0]
-                    if (row["nome"] != original["nome"]
-                            or bool(row["ativo"]) != bool(original["ativo"])
-                            or str(row["telefone"]) != str(original["telefone"])):
-                        sb.table("clientes").update({
-                            "nome": str(row["nome"]).strip(),
-                            "telefone": str(row["telefone"]).strip() or None,
-                            "ativo": bool(row["ativo"]),
-                        }).eq("id", int(row["id"])).execute()
-                        alterados += 1
-                limpar_cache_clientes()
-                if alterados:
-                    st.success(f"{alterados} cliente(s) atualizado(s)!")
-                    st.rerun()
-                else:
-                    st.info("Nenhuma alteração detectada.")
-
     # --- configurações do Pix (para a mensagem de cobrança) ---
     st.divider()
     st.markdown("### ⚙️ Configuração da cobrança (Pix)")
@@ -664,6 +724,118 @@ if pagina == "⚙️ Configurações":
         salvar_config("pix_nome", pix_nome.strip())
         st.success("Configuração salva! Será usada nas mensagens de cobrança.")
         st.rerun()
+
+
+    # ------------------------------------------------------------
+    # Usuários do sistema (somente perfil admin)
+    # ------------------------------------------------------------
+    if PODE_USUARIOS:
+        st.divider()
+        st.markdown("### 👤 Usuários do sistema")
+
+        cu1, cu2 = st.columns([1, 2])
+
+        with cu1:
+            st.markdown("**Novo usuário**")
+            with st.form("form_usuario", clear_on_submit=True):
+                nome_us = st.text_input("Nome")
+                senha_us = st.text_input("Senha inicial", key="campo_nova_senha")
+                perfil_us = st.selectbox(
+                    "Perfil",
+                    ["operador", "gestor", "admin"],
+                    help="operador: lança, consulta e cadastra clientes  •  "
+                         "gestor: tudo, menos gerenciar usuários  •  "
+                         "admin: tudo",
+                )
+                salvar_us = st.form_submit_button(
+                    "➕ Cadastrar", type="primary", use_container_width=True
+                )
+            if salvar_us:
+                if not nome_us.strip() or not senha_us:
+                    st.warning("Informe o nome e a senha inicial.")
+                else:
+                    try:
+                        sb.table("usuarios").insert({
+                            "nome": nome_us.strip().title(),
+                            "senha_hash": gerar_hash(senha_us),
+                            "perfil": perfil_us,
+                        }).execute()
+                        limpar_cache_usuarios()
+                        st.success(f"Usuário **{nome_us.strip().title()}** criado!")
+                        st.rerun()
+                    except Exception as e:
+                        if "duplicate" in str(e).lower() or "unique" in str(e).lower():
+                            st.error("Já existe um usuário com esse nome.")
+                        else:
+                            st.error(f"Erro ao cadastrar: {e}")
+
+        with cu2:
+            st.markdown("**Usuários cadastrados**")
+            df_us = carregar_usuarios(somente_ativos=False)
+            if df_us.empty:
+                st.info("Nenhum usuário cadastrado.")
+            else:
+                df_us_edit = st.data_editor(
+                    df_us[["id", "nome", "perfil", "ativo"]],
+                    hide_index=True,
+                    use_container_width=True,
+                    disabled=["id", "nome"],
+                    column_config={
+                        "id": st.column_config.NumberColumn("ID", width="small"),
+                        "nome": st.column_config.TextColumn("Usuário"),
+                        "perfil": st.column_config.SelectboxColumn(
+                            "Perfil", options=["operador", "gestor", "admin"]
+                        ),
+                        "ativo": st.column_config.CheckboxColumn("Ativo"),
+                    },
+                    key="editor_usuarios",
+                )
+                if st.button("💾 Salvar usuários", key="btn_salvar_usuarios"):
+                    alterados = 0
+                    for _, row in df_us_edit.iterrows():
+                        original = df_us.loc[df_us["id"] == row["id"]].iloc[0]
+                        if (row["perfil"] != original["perfil"]
+                                or bool(row["ativo"]) != bool(original["ativo"])):
+                            if original["nome"] == "Administrador" and (
+                                not bool(row["ativo"]) or row["perfil"] != "admin"
+                            ):
+                                st.warning("O usuário Administrador não pode ser inativado nem rebaixado.")
+                                continue
+                            sb.table("usuarios").update({
+                                "perfil": str(row["perfil"]),
+                                "ativo": bool(row["ativo"]),
+                            }).eq("id", int(row["id"])).execute()
+                            alterados += 1
+                    limpar_cache_usuarios()
+                    if alterados:
+                        st.success(f"{alterados} usuário(s) atualizado(s)!")
+                        st.rerun()
+                    else:
+                        st.info("Nenhuma alteração detectada.")
+
+                st.markdown("**🔑 Resetar senha**")
+                cr1, cr2, cr3 = st.columns([2, 2, 1])
+                with cr1:
+                    us_reset = st.selectbox("Usuário", df_us["nome"].tolist(), key="sel_reset")
+                with cr2:
+                    nova_senha = st.text_input("Nova senha", key="campo_reset_senha")
+                with cr3:
+                    st.markdown("<br>", unsafe_allow_html=True)
+                    if st.button("Resetar", use_container_width=True, key="btn_reset_senha"):
+                        if not nova_senha:
+                            st.warning("Informe a nova senha.")
+                        else:
+                            sb.table("usuarios").update(
+                                {"senha_hash": gerar_hash(nova_senha)}
+                            ).eq("nome", us_reset).execute()
+                            limpar_cache_usuarios()
+                            st.success(f"Senha de **{us_reset}** atualizada!")
+
+            st.caption(
+                "💡 Prefira **inativar** em vez de excluir — assim o histórico da coluna "
+                "*Lançado por* continua fazendo sentido."
+            )
+
 
 
 # ============================================================
@@ -859,7 +1031,7 @@ elif pagina == "🧾 Lançamento":
                             "valor_pago": valor_pago_por_item[idx],
                             "forma_pagamento": forma_pgto if situacao in ("✅ Pago", "💸 Parcial") else None,
                             "data_pagamento": data_lanc.isoformat() if esta_pago else None,
-                            "lancado_por": PERFIL,
+                            "lancado_por": USUARIO,
                         }
                         for idx, it in enumerate(carrinho)
                     ]
@@ -978,6 +1150,7 @@ elif pagina == "📋 Extrato":
                 "valor_pago": round(sub["valor_pago"].sum(), 2),
                 "pendente": round(sub["pendente"].sum(), 2),
                 "observacao": sub["observacao"].iloc[0],
+                "lancado_por": sub["lancado_por"].iloc[0] if "lancado_por" in sub.columns else "",
                 "situacao": ("✅ Pago" if sub["pendente"].sum() <= 0.001
                              else ("💸 Parcial" if sub["valor_pago"].sum() > 0.001
                                    else "⏳ Pendente")),
@@ -986,7 +1159,8 @@ elif pagina == "📋 Extrato":
 
         st.dataframe(
             df_ped[["data_lancamento", "data_pagamento", "cliente", "evento", "itens",
-                    "total", "valor_pago", "pendente", "situacao", "observacao"]],
+                    "total", "valor_pago", "pendente", "situacao", "observacao",
+                    "lancado_por"]],
             hide_index=True,
             use_container_width=True,
             column_config={
@@ -1000,6 +1174,7 @@ elif pagina == "📋 Extrato":
                 "pendente": st.column_config.NumberColumn("Valor Pendente", format="R$ %.2f"),
                 "situacao": st.column_config.TextColumn("Situação"),
                 "observacao": st.column_config.TextColumn("Obs. Pedido"),
+                "lancado_por": st.column_config.TextColumn("Lançado por", width="small"),
             },
         )
 
@@ -1044,6 +1219,8 @@ elif pagina == "📋 Extrato":
                     "valor_pago": pago_item,
                     "pago": pago_item >= item["total"] - 0.001,
                     "data_pagamento": hoje_br().isoformat() if quitou_tudo else None,
+                    "alterado_por": USUARIO,
+                    "alterado_em": AGORA(),
                 }
                 if forma:
                     update["forma_pagamento"] = forma
@@ -1290,6 +1467,8 @@ elif pagina == "📋 Extrato":
                         "evento": nova_missao,
                         "data_lancamento": nova_data.isoformat(),
                         "observacao": nova_obs.strip() or None,
+                        "alterado_por": USUARIO,
+                        "alterado_em": AGORA(),
                     }).eq("pedido_id", pid_editar).execute()
                     st.success(f"Pedido de {novo_cliente} atualizado!")
                     st.rerun()
@@ -1326,7 +1505,7 @@ elif pagina == "📋 Extrato":
                             {
                                 "excluido": True,
                                 "motivo_exclusao": motivo.strip(),
-                                "excluido_por": PERFIL,
+                                "excluido_por": USUARIO,
                                 "excluido_em": datetime.now(TZ).isoformat(),
                             }
                         ).eq("pedido_id", pid_excluir).execute()
