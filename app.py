@@ -949,7 +949,7 @@ elif pagina == "🧾 Lançamento":
     # --- adicionar itens ao pedido ---
     st.markdown(
         "<hr class='regua-seccao'>"
-        "<div class='titulo-seccao'>🛒 Adicionar produto ao pedido</div>",
+        "<div class='titulo-seccao'>🛒 Adicionar produto</div>",
         unsafe_allow_html=True,
     )
     
