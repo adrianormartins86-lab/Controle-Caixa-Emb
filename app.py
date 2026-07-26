@@ -116,6 +116,18 @@ st.markdown(
         overflow: hidden !important;
     }}
 
+    /* No celular, ao trazer um campo para o topo, deixa folga para o cabeçalho */
+    @media (max-width: 640px) {{
+        [data-testid="stSelectbox"],
+        [data-testid="stNumberInput"],
+        [data-testid="stTextInput"],
+        [data-testid="stDateInput"],
+        [data-testid="stTextArea"],
+        [data-testid="stRadio"] {{
+            scroll-margin-top: 5rem;
+        }}
+    }}
+
     /* Titulo de secao (fica maior no celular) */
     .titulo-seccao {{
         color: {AZUL};
@@ -222,6 +234,95 @@ def bloquear_teclado():
             requestAnimationFrame(() => {{ agendado = false; travar(); }});
         }});
         obs.observe(doc.body, {{childList: true, subtree: true}});
+        </script>
+        """,
+        height=0,
+    )
+
+
+# ------------------------------------------------------------
+# UX no celular: o campo que está sendo preenchido sobe para o topo
+# ------------------------------------------------------------
+LARGURA_MOBILE = 640
+
+BLOCOS_CAMPO = (
+    '[data-testid="stSelectbox"], [data-testid="stNumberInput"], '
+    '[data-testid="stTextInput"], [data-testid="stDateInput"], '
+    '[data-testid="stTextArea"], [data-testid="stRadio"]'
+)
+
+
+def ux_mobile():
+    """Sobe para o topo da tela o campo que recebeu foco ou clique.
+
+    Só age em telas estreitas. O clique também é observado porque o campo
+    Qtde é readonly e os botões - / + não dão foco ao input.
+    Os listeners são registrados uma única vez (marca em document.body).
+    """
+    components.html(
+        f"""
+        <script>
+        const win = window.parent;
+        const doc = win.document;
+        const BLOCOS = '{BLOCOS_CAMPO}';
+
+        function ehCelular() {{ return win.innerWidth <= {LARGURA_MOBILE}; }}
+
+        function aoTopo(el) {{
+            if (el) el.scrollIntoView({{block: 'start', behavior: 'smooth'}});
+        }}
+
+        function tratar(ev) {{
+            if (!ehCelular()) return;
+            const bloco = ev.target.closest(BLOCOS);
+            if (bloco) setTimeout(() => aoTopo(bloco), 150);
+        }}
+
+        if (!doc.body.dataset.uxMobile) {{
+            doc.addEventListener('focusin', tratar, true);
+            doc.addEventListener('click', tratar, true);
+            doc.body.dataset.uxMobile = '1';
+        }}
+        </script>
+        """,
+        height=0,
+    )
+
+
+def rolar_tela(alvo: str = "topo"):
+    """Rola a tela depois de um rerun. alvo: 'topo' ou um seletor CSS."""
+    if alvo == "topo":
+        destino = "null"
+    else:
+        destino = f"doc.querySelector('{alvo}')"
+    components.html(
+        f"""
+        <script>
+        const win = window.parent;
+        const doc = win.document;
+
+        function rolar() {{
+            const alvo = {destino};
+            if (alvo) {{
+                alvo.scrollIntoView({{block: 'start', behavior: 'smooth'}});
+                return;
+            }}
+            // topo: cada versao do Streamlit usa um container de rolagem diferente
+            [
+                doc.querySelector('section[data-testid="stMain"]'),
+                doc.querySelector('section.main'),
+                doc.querySelector('[data-testid="stAppViewContainer"]'),
+                doc.scrollingElement,
+                doc.documentElement,
+            ].forEach(el => {{
+                if (el && el.scrollTo) el.scrollTo({{top: 0, behavior: 'smooth'}});
+            }});
+            win.scrollTo({{top: 0, behavior: 'smooth'}});
+        }}
+
+        // repete: o Streamlit ainda pode estar desenhando a tela
+        setTimeout(rolar, 80);
+        setTimeout(rolar, 350);
         </script>
         """,
         height=0,
@@ -599,6 +700,7 @@ with st.sidebar:
 
 # vale para todas as telas: nenhum campo de data aceita digitação
 bloquear_teclado()
+ux_mobile()
 
 # ============================================================
 # TELA: CADASTROS (Produtos, Missões, Clientes)
@@ -975,6 +1077,11 @@ elif pagina == "🧾 Lançamento":
     NP = st.session_state["n_pedido"]
     NI = st.session_state["n_item"]
 
+    # rolagem pedida pela ação anterior (salvar pedido / adicionar item)
+    destino = st.session_state.pop("rolar", None)
+    if destino:
+        rolar_tela(destino)
+
     # mensagem do último salvamento (o st.rerun apagaria o st.success)
     if st.session_state.get("flash"):
         st.success(st.session_state.pop("flash"))
@@ -989,7 +1096,10 @@ elif pagina == "🧾 Lançamento":
         st.stop()
     lista_clientes = df_clientes["nome"].tolist()
 
-    col_ev, col_a, col_b = st.columns([1.2, 2, 1])
+    # Data primeiro: é o campo que a equipe confere antes de tudo no celular
+    col_b, col_ev, col_a = st.columns([1, 1.2, 2])
+    with col_b:
+        data_lanc = st.date_input("Data", value=hoje_br(), format="DD/MM/YYYY")
     with col_ev:
         missao_sel = st.selectbox("🎯 Missão", lista_missoes)
     with col_a:
@@ -1001,13 +1111,11 @@ elif pagina == "🧾 Lançamento":
             key=f"sel_cliente_{NP}",
             help="Escolha um cliente previamente cadastrado.",
         )
-    with col_b:
-        data_lanc = st.date_input("Data", value=hoje_br(), format="DD/MM/YYYY")
 
     # --- adicionar itens ao pedido ---
     st.markdown(
         "<hr class='regua-seccao'>"
-        "<div class='titulo-seccao'>🛒 Adicionar produto</div>",
+        "<div class='titulo-seccao' id='sec-produto'>🛒 Adicionar produto</div>",
         unsafe_allow_html=True,
     )
     
@@ -1076,6 +1184,7 @@ elif pagina == "🧾 Lançamento":
                 )
                 # o item já foi para a lista abaixo -> limpa os campos de cima
                 st.session_state["n_item"] += 1
+                st.session_state["rolar"] = "#sec-produto"
                 st.rerun()
 
     # --- carrinho ---
@@ -1199,6 +1308,7 @@ elif pagina == "🧾 Lançamento":
                         st.session_state["carrinho"] = []
                         st.session_state["n_pedido"] += 1
                         st.session_state["n_item"] += 1
+                        st.session_state["rolar"] = "topo"
                         st.session_state["flash"] = (
                             f"Lançamento salvo para **{cliente_sel.strip().title()}** "
                             f"— R$ {total_pedido:.2f}. 🎉"
