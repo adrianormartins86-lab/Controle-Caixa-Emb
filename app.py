@@ -210,6 +210,10 @@ st.markdown(
 # clique — por isso o calendário segue funcionando normalmente.
 #
 # Qtde: identificado pelo aria-label, para NÃO travar Preço unit. / Valor extra.
+# Aqui NÃO usamos readonly: o botão "próximo" (→) do teclado do celular pula
+# campos readonly, e a equipe precisa que ele caia no Qtde. Sem o readonly o
+# campo entra na navegação normalmente, e a digitação continua impossível
+# graças ao inputmode='none' (não abre teclado) + bloqueio de keydown.
 # ------------------------------------------------------------
 SELETORES_DATA = [
     '[data-testid="stDateInput"] input',
@@ -232,9 +236,13 @@ def bloquear_teclado():
         const SELETORES = [{seletores}];
         const ROTULOS = [{rotulos}];
 
-        function semTeclado(el) {{
+        function semTeclado(el, comReadonly) {{
             // reaplicado sempre: o React remove o atributo ao redesenhar
-            el.setAttribute('readonly', 'readonly');
+            if (comReadonly) {{
+                el.setAttribute('readonly', 'readonly');
+            }} else {{
+                el.removeAttribute('readonly');
+            }}
             el.setAttribute('inputmode', 'none');
             el.setAttribute('autocomplete', 'off');
             el.style.caretColor = 'transparent';
@@ -253,12 +261,14 @@ def bloquear_teclado():
         }}
 
         function travar() {{
+            // datas: com readonly (mantem o calendario e nao sobe teclado)
             SELETORES.forEach(sel => {{
-                doc.querySelectorAll(sel).forEach(semTeclado);
+                doc.querySelectorAll(sel).forEach(el => semTeclado(el, true));
             }});
+            // Qtde: SEM readonly, para nao ser pulada pelo "proximo" do celular
             doc.querySelectorAll('input').forEach(el => {{
                 const rot = el.getAttribute('aria-label') || '';
-                if (ROTULOS.includes(rot)) semTeclado(el);
+                if (ROTULOS.includes(rot)) semTeclado(el, false);
                 el.setAttribute('data-lpignore', 'true');
             }});
         }}
@@ -1224,7 +1234,8 @@ elif pagina == "🧾 Lançamento":
                 )
                 # o item já foi para a lista abaixo -> limpa os campos de cima
                 st.session_state["n_item"] += 1
-                st.session_state["rolar"] = "#sec-produto"
+                # leva a tela direto para a lista do pedido (total, situação e salvar)
+                st.session_state["rolar"] = "#sec-itens"
                 st.rerun()
 
     # --- carrinho ---
