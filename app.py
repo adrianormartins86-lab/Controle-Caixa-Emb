@@ -953,8 +953,8 @@ elif pagina == "🧾 Lançamento":
         unsafe_allow_html=True,
     )
     
-    # Adicionamos mais uma coluna (c_extra) e reajustamos os tamanhos para caber tudo
-    c1, c2, c3, c_extra, c4, c5 = st.columns([2.0, 0.7, 1.1, 1.1, 2.0, 1.1])
+    # Qtde precisa de peso >= 1.1: abaixo disso o Streamlit esconde os botões - e +
+    c1, c2, c3, c_extra, c4, c5 = st.columns([1.8, 1.15, 1.15, 1.15, 1.6, 1.15])
     with c1:
         produto_sel = st.selectbox(
             "Produto",
@@ -965,7 +965,10 @@ elif pagina == "🧾 Lançamento":
         )
     with c2:
         # somente os botões - e + (a digitação é bloqueada por bloquear_teclado)
-        qtde = st.number_input("Qtde", min_value=1, value=1, step=1, key=f"inp_qtde_{NI}")
+        qtde = st.number_input(
+            "Qtde", min_value=1, value=1, step=1, key=f"inp_qtde_{NI}",
+            help="Use os botões - e + para ajustar a quantidade.",
+        )
     with c3:
         preco_padrao = float(precos.get(produto_sel, 0.0)) if produto_sel else 0.0
         preco_unit = st.number_input(
