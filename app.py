@@ -588,13 +588,19 @@ def link_whatsapp(telefone: str, mensagem: str) -> str:
 def gerar_pdf_fechamento(periodo_txt, por_forma, total_receb, por_produto,
                          total_consumo, pagantes, total_pago, a_receber, total_receber,
                          por_missao=None, total_missao=0.0):
-    """Monta o PDF do fechamento com as visões dispostas em 2 colunas."""
+    """Monta o PDF do fechamento com as visões dispostas em 2 colunas.
+
+    Usa um layout de verdade em 2 colunas (BaseDocTemplate + Frames), em vez de
+    empilhar tudo dentro de uma única célula de tabela: isso permite que o
+    conteúdo flua e pagine automaticamente quando não cabe em uma página só,
+    evitando o erro "Table too large ... too large on page" do ReportLab.
+    """
     from io import BytesIO
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.units import mm
     from reportlab.lib import colors
-    from reportlab.platypus import (SimpleDocTemplate, Table, TableStyle, Paragraph,
-                                    Spacer, Image as RLImage, KeepTogether)
+    from reportlab.platypus import (BaseDocTemplate, PageTemplate, Frame, FrameBreak,
+                                    Table, TableStyle, Paragraph, Spacer, Image as RLImage)
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 
     AZUL_RL = colors.HexColor("#0B3D91")
@@ -605,16 +611,62 @@ def gerar_pdf_fechamento(periodo_txt, por_forma, total_receb, por_produto,
         return f"R$ {v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
     buf = BytesIO()
-    doc = SimpleDocTemplate(buf, pagesize=A4,
-                            leftMargin=12 * mm, rightMargin=12 * mm,
-                            topMargin=12 * mm, bottomMargin=12 * mm)
+
+    margem = 12 * mm
+    largura_pag, altura_pag = A4
+    largura_util = largura_pag - 2 * margem
+    altura_util = altura_pag - 2 * margem
+
+    VAO = 6 * mm
+    COL_W = (largura_util - VAO) / 2
+
     styles = getSampleStyleSheet()
     titulo = ParagraphStyle("titulo", parent=styles["Title"], textColor=AZUL_RL, fontSize=16)
     sub = ParagraphStyle("sub", parent=styles["Normal"], textColor=colors.grey, fontSize=9)
     sec = ParagraphStyle("sec", parent=styles["Heading3"], textColor=MAGENTA_RL, fontSize=10, spaceBefore=2, spaceAfter=2)
 
-    # largura útil de cada coluna (A4 - margens, dividido em 2 com um vão)
-    COL_W = 91 * mm
+    # cabeçalho (logo + título + período) — monta primeiro para medir a altura
+    # real que ele ocupa (o texto do período varia de tamanho conforme os
+    # filtros de missão/cliente aplicados, então não dá pra "chutar" um valor
+    # fixo aqui: se o cabeçalho não coubesse no espaço reservado, ele
+    # transbordaria sozinho para a coluna esquerda e bagunçava o layout).
+    if TEM_LOGO:
+        try:
+            cab = Table([[RLImage(LOGO, width=16 * mm, height=16 * mm),
+                          Paragraph("Fechamento — Gerenciamento de Caixa", titulo)]],
+                        colWidths=[20 * mm, None])
+            cab.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE")]))
+        except Exception:
+            cab = Paragraph("Fechamento — Gerenciamento de Caixa", titulo)
+    else:
+        cab = Paragraph("Fechamento — Gerenciamento de Caixa", titulo)
+    par_periodo = Paragraph(periodo_txt, sub)
+
+    _, altura_cab = cab.wrap(largura_util, altura_util)
+    _, altura_periodo = par_periodo.wrap(largura_util, altura_util)
+    ALTURA_CABECALHO = altura_cab + altura_periodo + 6 * mm  # + folga de segurança
+
+    doc = BaseDocTemplate(
+        buf, pagesize=A4,
+        leftMargin=margem, rightMargin=margem,
+        topMargin=margem, bottomMargin=margem,
+    )
+
+    frame_cabecalho = Frame(
+        margem, altura_pag - margem - ALTURA_CABECALHO, largura_util, ALTURA_CABECALHO,
+        id="cabecalho", leftPadding=0, rightPadding=0, topPadding=0, bottomPadding=2,
+    )
+    frame_esq = Frame(
+        margem, margem, COL_W, altura_util - ALTURA_CABECALHO,
+        id="esq", leftPadding=0, rightPadding=0, topPadding=0, bottomPadding=0,
+    )
+    frame_dir = Frame(
+        margem + COL_W + VAO, margem, COL_W, altura_util - ALTURA_CABECALHO,
+        id="dir", leftPadding=0, rightPadding=0, topPadding=0, bottomPadding=0,
+    )
+    doc.addPageTemplates([
+        PageTemplate(id="Fechamento", frames=[frame_cabecalho, frame_esq, frame_dir]),
+    ])
 
     def bloco_tabela(dados, larguras):
         t = Table(dados, colWidths=larguras, repeatRows=1)
@@ -634,10 +686,9 @@ def gerar_pdf_fechamento(periodo_txt, por_forma, total_receb, por_produto,
         return t
 
     def secao(titulo_txt, tabela):
-        # retorna a lista de flowables da seção (sem KeepTogether p/ caber em célula)
         return [Paragraph(titulo_txt, sec), tabela, Spacer(1, 4)]
 
-    # monta cada seção como um "flowable" único
+    # monta cada seção como uma lista de flowables
     secoes = []
 
     # Forma de pagamento
@@ -672,56 +723,14 @@ def gerar_pdf_fechamento(periodo_txt, por_forma, total_receb, por_produto,
         linhas = [["Cliente", "Deve"], ["(nada em aberto)", "-"]]
     secoes.append(secao("A receber por cliente", bloco_tabela(linhas, [55 * mm, 36 * mm])))
 
-    # distribui as seções em 2 colunas (esquerda/direita) alternadamente
-    col_esq, col_dir = [], []
-    for i, s in enumerate(secoes):
-        (col_esq if i % 2 == 0 else col_dir).extend(s)
+    # cabeçalho vai no frame do topo; o restante das seções flui normalmente
+    # pela coluna esquerda e, quando não couber mais, pela direita — e, se
+    # ainda sobrar conteúdo, o ReportLab cria novas páginas sozinho.
+    story = [cab, par_periodo, FrameBreak()]
+    for s in secoes:
+        story.extend(s)
 
-    def coluna_para_tabela(flowables):
-        # empilha os flowables da coluna numa tabela vertical de 1 coluna
-        if not flowables:
-            return Spacer(1, 1)
-        t = Table([[f] for f in flowables], colWidths=[COL_W])
-        t.setStyle(TableStyle([
-            ("VALIGN", (0, 0), (-1, -1), "TOP"),
-            ("LEFTPADDING", (0, 0), (-1, -1), 0),
-            ("RIGHTPADDING", (0, 0), (-1, -1), 0),
-            ("TOPPADDING", (0, 0), (-1, -1), 0),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
-        ]))
-        return t
-
-    elems = []
-    # cabeçalho
-    if TEM_LOGO:
-        try:
-            cab = Table([[RLImage(LOGO, width=16 * mm, height=16 * mm),
-                          Paragraph("Fechamento — Gerenciamento de Caixa", titulo)]],
-                        colWidths=[20 * mm, None])
-            cab.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE")]))
-            elems.append(cab)
-        except Exception:
-            elems.append(Paragraph("Fechamento — Gerenciamento de Caixa", titulo))
-    else:
-        elems.append(Paragraph("Fechamento — Gerenciamento de Caixa", titulo))
-    elems.append(Paragraph(periodo_txt, sub))
-    elems.append(Spacer(1, 6))
-
-    # grid de 2 colunas
-    grid = Table([[coluna_para_tabela(col_esq), coluna_para_tabela(col_dir)]],
-                 colWidths=[COL_W, COL_W])
-    grid.setStyle(TableStyle([
-        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ("LEFTPADDING", (0, 0), (0, 0), 0),
-        ("RIGHTPADDING", (0, 0), (0, 0), 6),
-        ("LEFTPADDING", (1, 0), (1, 0), 6),
-        ("RIGHTPADDING", (1, 0), (1, 0), 0),
-        ("TOPPADDING", (0, 0), (-1, -1), 0),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
-    ]))
-    elems.append(grid)
-
-    doc.build(elems)
+    doc.build(story)
     buf.seek(0)
     return buf.getvalue()
 
@@ -1406,11 +1415,23 @@ elif pagina == "📋 Extrato":
     cli_cadastrados = df_cli_todos["nome"].tolist() if not df_cli_todos.empty else []
     lista_cli_filtro = ["Todos"] + sorted(list(set(cli_historico + cli_cadastrados)))
 
+    modo_data = st.radio(
+        "Filtrar por", ["Período", "Dia único"], horizontal=True, key="extrato_modo_data"
+    )
+
     f1, f2, f3, f4, f5 = st.columns([1, 1, 1.4, 1.1, 1.1])
-    with f1:
-        data_ini = st.date_input("De", value=hoje_br() - timedelta(days=30), format="DD/MM/YYYY")
-    with f2:
-        data_fim = st.date_input("Até", value=hoje_br(), format="DD/MM/YYYY")
+    if modo_data == "Dia único":
+        with f1:
+            dia_unico = st.date_input("Dia", value=hoje_br(), format="DD/MM/YYYY")
+        data_ini = dia_unico
+        data_fim = dia_unico
+        with f2:
+            st.caption("")  # mantém o alinhamento das colunas abaixo
+    else:
+        with f1:
+            data_ini = st.date_input("De", value=hoje_br() - timedelta(days=30), format="DD/MM/YYYY")
+        with f2:
+            data_fim = st.date_input("Até", value=hoje_br(), format="DD/MM/YYYY")
     with f3:
         cliente_filtro = st.selectbox("Cliente", lista_cli_filtro)
     with f4:
@@ -1724,7 +1745,10 @@ elif pagina == "📋 Extrato":
                     st.caption(f"Total a receber: **{fmt(total_receber)}**")
 
             # --- gerar PDF com as 4 visões (botão ao lado do cabeçalho) ---
-            periodo_txt = f"Período: {data_ini.strftime('%d/%m/%Y')} a {data_fim.strftime('%d/%m/%Y')}"
+            if data_ini == data_fim:
+                periodo_txt = f"Dia: {data_fim.strftime('%d/%m/%Y')}"
+            else:
+                periodo_txt = f"Período: {data_ini.strftime('%d/%m/%Y')} a {data_fim.strftime('%d/%m/%Y')}"
             if missao_filtro != "Todos":
                 periodo_txt += f"  •  Missão: {missao_filtro}"
             if cliente_filtro != "Todos":
@@ -1736,10 +1760,11 @@ elif pagina == "📋 Extrato":
                         total_consumo, pagantes_pdf, total_pago, a_receber_pdf, total_receber,
                         por_missao_pdf, total_missao,
                     )
+                    prefixo_arquivo = "fechamento_dia" if data_ini == data_fim else "fechamento_periodo"
                     st.download_button(
                         "📄 Baixar PDF",
                         data=pdf_bytes,
-                        file_name=f"fechamento_{data_fim.strftime('%d-%m-%Y')}.pdf",
+                        file_name=f"{prefixo_arquivo}_{data_fim.strftime('%d-%m-%Y')}.pdf",
                         mime="application/pdf",
                         type="primary",
                         use_container_width=True,
