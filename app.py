@@ -1886,18 +1886,27 @@ elif pagina == "📋 Extrato":
 elif pagina == "📊 Resumo por cliente":
     st.markdown("### 📊 Resumo por cliente")
 
-    modo_data_resumo = st.radio(
-        "Filtrar por", ["Todos os períodos", "Período", "Dia único"],
-        horizontal=True, key="resumo_modo_data",
+    df_ev_todos_resumo = carregar_eventos(somente_ativos=False)
+    lista_missao_resumo = ["Todos"] + (
+        df_ev_todos_resumo["nome"].tolist() if not df_ev_todos_resumo.empty else []
     )
+
+    col_modo, col_missao = st.columns([3, 1.3])
+    with col_modo:
+        modo_data_resumo = st.radio(
+            "Filtrar por", ["Todos os períodos", "Período", "Dia único"],
+            horizontal=True, key="resumo_modo_data",
+        )
+    with col_missao:
+        missao_filtro_resumo = st.selectbox("Missão", lista_missao_resumo, key="resumo_missao")
 
     if modo_data_resumo == "Todos os períodos":
         data_ini_resumo = data_fim_resumo = None
-        st.caption("Considera todos os lançamentos, de todos os períodos.")
+        legenda_resumo = "Considera todos os lançamentos, de todos os períodos"
     elif modo_data_resumo == "Dia único":
         dia_resumo = st.date_input("Dia", value=hoje_br(), format="DD/MM/YYYY", key="resumo_dia")
         data_ini_resumo = data_fim_resumo = dia_resumo
-        st.caption(f"Lançamentos de {dia_resumo.strftime('%d/%m/%Y')}.")
+        legenda_resumo = f"Lançamentos de {dia_resumo.strftime('%d/%m/%Y')}"
     else:
         rc1, rc2 = st.columns(2)
         with rc1:
@@ -1908,24 +1917,29 @@ elif pagina == "📊 Resumo por cliente":
             data_fim_resumo = st.date_input(
                 "Até", value=hoje_br(), format="DD/MM/YYYY", key="resumo_ate"
             )
-        st.caption(
+        legenda_resumo = (
             f"Lançamentos de {data_ini_resumo.strftime('%d/%m/%Y')} "
-            f"a {data_fim_resumo.strftime('%d/%m/%Y')}."
+            f"a {data_fim_resumo.strftime('%d/%m/%Y')}"
         )
+    if missao_filtro_resumo != "Todos":
+        legenda_resumo += f"  •  Missão: {missao_filtro_resumo}"
+    st.caption(legenda_resumo + ".")
 
     if data_ini_resumo is None:
         dados_all = sb.table("lancamentos").select("*").eq("excluido", False).execute().data
         df_all = pd.DataFrame(dados_all)
+        if missao_filtro_resumo != "Todos" and not df_all.empty and "evento" in df_all.columns:
+            df_all = df_all.loc[df_all["evento"] == missao_filtro_resumo]
     else:
         df_all = carregar_lancamentos(
-            data_ini_resumo, data_fim_resumo, "Todos", "Todos", "Todos", False
+            data_ini_resumo, data_fim_resumo, "Todos", "Todos", missao_filtro_resumo, False
         )
 
     if df_all.empty:
-        if data_ini_resumo is None:
+        if data_ini_resumo is None and missao_filtro_resumo == "Todos":
             st.info("Nenhum lançamento registrado ainda.")
         else:
-            st.info("Nenhum lançamento encontrado nesse período.")
+            st.info("Nenhum lançamento encontrado com esses filtros.")
     else:
         if "valor_pago" not in df_all.columns:
             df_all["valor_pago"] = 0.0
