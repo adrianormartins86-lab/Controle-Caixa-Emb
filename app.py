@@ -1339,6 +1339,22 @@ elif pagina == "🧾 Lançamento":
                 "Forma de pagamento", FORMAS_PAGAMENTO, key=f"sel_forma_{NP}"
             )
 
+        @st.dialog("🧹 Limpar itens do pedido?")
+        def confirmar_limpar_itens():
+            st.write(
+                f"Isso vai remover **{len(carrinho)} item(ns)** já adicionados a este "
+                "pedido. Essa ação não pode ser desfeita."
+            )
+            cc1, cc2 = st.columns(2)
+            with cc1:
+                if st.button("🧹 Sim, limpar", type="primary", use_container_width=True):
+                    st.session_state["carrinho"] = []
+                    st.session_state["n_item"] += 1
+                    st.rerun()
+            with cc2:
+                if st.button("Cancelar", use_container_width=True):
+                    st.rerun()
+
         col_s1, col_s2 = st.columns([1, 3])
         with col_s1:
             if st.button("✅ Salvar lançamento", type="primary", use_container_width=True):
@@ -1406,9 +1422,7 @@ elif pagina == "🧾 Lançamento":
                         st.error(f"Erro ao salvar: {e}")
         with col_s2:
             if st.button("🧹 Limpar itens"):
-                st.session_state["carrinho"] = []
-                st.session_state["n_item"] += 1
-                st.rerun()
+                confirmar_limpar_itens()
     else:
         st.info("Nenhum item adicionado ainda. Escolha um produto acima e clique em **Adicionar**.")
 
