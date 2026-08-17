@@ -557,10 +557,17 @@ def clientes_existentes_no_historico() -> list[str]:
     dados = sb.table("lancamentos").select("cliente").eq("excluido", False).execute().data
     return sorted({d["cliente"] for d in dados})
 
+def carregar_abatimentos(somente_ativos: bool = True) -> pd.DataFrame:
+    """Abatimentos/reembolsos: crédito lançado direto pro cliente (não é forma
+    de pagamento de um pedido específico) — abate do total pendente dele."""
+    q = sb.table("abatimentos").select("*")
+    if somente_ativos:
+        q = q.eq("excluido", False)
+    dados = q.order("data", desc=True).execute().data
+    return pd.DataFrame(dados)
+
 # Formas de pagamento aceitas
-# "Abatimento/Reembolso" é usado quando o cliente amortiza o valor pendente
-# com produto/serviço (ou outra compensação) em vez de dinheiro/pix/cartão.
-FORMAS_PAGAMENTO = ["Dinheiro", "Pix", "Cartão Débito", "Cartão Crédito", "Bonificação", "Abatimento/Reembolso"]
+FORMAS_PAGAMENTO = ["Dinheiro", "Pix", "Cartão Débito", "Cartão Crédito", "Bonificação"]
 
 def fmt_moeda(v: float) -> str:
     return f"R$ {v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
@@ -746,8 +753,8 @@ def gerar_pdf_fechamento(periodo_txt, por_forma, total_receb, por_produto,
 # todos veem "Configurações", mas dentro dela só o cadastro de clientes
 # fica liberado para o perfil operador.
 MENU_USUARIO = ["🧾 Lançamento", "📋 Extrato", "⚙️ Configurações"]
-MENU_ADMIN = ["🧾 Lançamento", "📋 Extrato", "📑 Fechamento", "📊 Resumo por cliente",
-              "📱 Gerar Cobrança", "⚙️ Configurações"]
+MENU_ADMIN = ["🧾 Lançamento", "📋 Extrato", "🔄 Abatimento/Reembolso", "📑 Fechamento",
+              "📊 Resumo por cliente", "📱 Gerar Cobrança", "⚙️ Configurações"]
 
 with st.sidebar:
     st.caption(f"👤 Conectado como **{USUARIO}**")
@@ -1519,11 +1526,29 @@ elif pagina == "📋 Extrato":
             })
         df_ped = pd.DataFrame(grupos).sort_values(["situacao", "cliente"])
 
+        # abatimentos/reembolsos do mesmo período (e cliente, se filtrado)
+        # descontam do card "A receber" — não mexem no pendente de cada
+        # pedido individual, só no total mostrado aqui.
+        df_ab_extrato = carregar_abatimentos(somente_ativos=True)
+        if not df_ab_extrato.empty:
+            datas_ab_extrato = pd.to_datetime(df_ab_extrato["data"]).dt.date
+            df_ab_extrato = df_ab_extrato.loc[
+                (datas_ab_extrato >= data_ini) & (datas_ab_extrato <= data_fim)
+            ]
+            if cliente_filtro != "Todos":
+                df_ab_extrato = df_ab_extrato.loc[df_ab_extrato["cliente"] == cliente_filtro]
+            total_abatido_extrato = df_ab_extrato["valor"].sum()
+        else:
+            total_abatido_extrato = 0.0
+        total_pendente_ajustado = round(max(total_pendente - total_abatido_extrato, 0.0), 2)
+
         m1, m2, m3, m4 = st.columns(4)
         m1.metric("Total no período", fmt_moeda(df_validos["total"].sum()))
-        m2.metric("⏳ A receber", fmt_moeda(total_pendente))
+        m2.metric("⏳ A receber", fmt_moeda(total_pendente_ajustado))
         m3.metric("Pedidos", df_validos["pedido_id"].nunique())
         m4.metric("Clientes", df_validos["cliente"].nunique())
+        if total_abatido_extrato > 0.001:
+            st.caption(f"(já descontado {fmt_moeda(total_abatido_extrato)} em abatimentos/reembolsos do período)")
 
         # ------------------------------------------------------------
         # Ações rápidas (editar / excluir pedido) — junto com os filtros,
@@ -1758,6 +1783,108 @@ elif pagina == "📋 Extrato":
 
 
 # ============================================================
+# TELA: ABATIMENTO/REEMBOLSO — crédito lançado direto no cliente,
+# não é forma de pagamento de um pedido específico — só administrador
+# ============================================================
+elif pagina == "🔄 Abatimento/Reembolso":
+    st.markdown("### 🔄 Abatimento / Reembolso")
+    st.caption(
+        "Use quando o cliente amortizar parte do valor pendente com produto, "
+        "serviço ou outra compensação (sem passar pelo caixa). O valor entra "
+        "aqui e abate automaticamente do total pendente do cliente nos relatórios."
+    )
+
+    cli_historico_ab = clientes_existentes_no_historico()
+    df_cli_todos_ab = carregar_clientes(somente_ativos=False)
+    cli_cadastrados_ab = df_cli_todos_ab["nome"].tolist() if not df_cli_todos_ab.empty else []
+    lista_cli_ab = sorted(list(set(cli_historico_ab + cli_cadastrados_ab)))
+
+    with st.form("form_abatimento", clear_on_submit=True):
+        ab1, ab2, ab3 = st.columns([1, 1.6, 1])
+        with ab1:
+            data_ab = st.date_input("Data", value=hoje_br(), format="DD/MM/YYYY")
+        with ab2:
+            if lista_cli_ab:
+                cliente_ab = st.selectbox("Cliente", lista_cli_ab)
+            else:
+                cliente_ab = st.text_input("Cliente")
+        with ab3:
+            valor_ab = st.number_input(
+                "Valor do abatimento (R$)", min_value=0.0, step=0.50, format="%.2f"
+            )
+        obs_ab = st.text_input("Observação (opcional)", placeholder="Ex.: pagou com 2 marmitex")
+        salvar_ab = st.form_submit_button("💾 Registrar abatimento", type="primary")
+
+    if salvar_ab:
+        if not cliente_ab:
+            st.error("Selecione (ou digite) o cliente.")
+        elif valor_ab <= 0:
+            st.error("Informe um valor maior que zero.")
+        else:
+            sb.table("abatimentos").insert({
+                "data": data_ab.isoformat(),
+                "cliente": cliente_ab.strip().title(),
+                "valor": round(valor_ab, 2),
+                "observacao": obs_ab.strip() or None,
+                "lancado_por": USUARIO,
+                "criado_em": AGORA(),
+            }).execute()
+            st.success(f"Abatimento de {fmt_moeda(valor_ab)} registrado para {cliente_ab.strip().title()}.")
+            st.rerun()
+
+    st.divider()
+    st.markdown("#### 📜 Abatimentos registrados")
+
+    df_ab = carregar_abatimentos(somente_ativos=True)
+    if df_ab.empty:
+        st.info("Nenhum abatimento registrado ainda.")
+    else:
+        df_ab_show = df_ab.copy()
+        df_ab_show["data_fmt"] = pd.to_datetime(df_ab_show["data"]).dt.strftime("%d/%m/%Y")
+        total_abatido = df_ab["valor"].sum()
+        st.caption(f"Total abatido (ativo): **{fmt_moeda(total_abatido)}**")
+
+        st.dataframe(
+            df_ab_show[["data_fmt", "cliente", "valor", "observacao", "lancado_por"]]
+                .sort_values("data_fmt", ascending=False),
+            hide_index=True,
+            use_container_width=True,
+            column_config={
+                "data_fmt": st.column_config.TextColumn("Data"),
+                "cliente": st.column_config.TextColumn("Cliente"),
+                "valor": st.column_config.NumberColumn("Valor", format="R$ %.2f"),
+                "observacao": st.column_config.TextColumn("Observação"),
+                "lancado_por": st.column_config.TextColumn("Lançado por", width="small"),
+            },
+        )
+
+        with st.expander("🗑️ Excluir um abatimento (correção)"):
+            def formata_abatimento(row_id):
+                r = df_ab.loc[df_ab["id"] == row_id].iloc[0]
+                data_fmt = pd.to_datetime(r["data"]).strftime("%d/%m/%Y")
+                return f"{data_fmt} | {r['cliente']} | R$ {r['valor']:.2f}"
+
+            id_excluir_ab = st.selectbox(
+                "Selecione o abatimento para excluir",
+                df_ab["id"].tolist(),
+                format_func=formata_abatimento,
+                key="sel_excluir_abatimento",
+            )
+            motivo_ab = st.text_input("Motivo da exclusão (obrigatório)", key="motivo_abatimento")
+            if st.button("Confirmar exclusão", type="secondary", key="excluir_abatimento_btn"):
+                if not motivo_ab.strip():
+                    st.error("Informe o motivo da exclusão.")
+                else:
+                    sb.table("abatimentos").update({
+                        "excluido": True,
+                        "motivo_exclusao": motivo_ab.strip(),
+                        "excluido_por": USUARIO,
+                        "excluido_em": datetime.now(TZ).isoformat(),
+                    }).eq("id", int(id_excluir_ab)).execute()
+                    st.success("Abatimento excluído (fica guardado com o motivo).")
+                    st.rerun()
+
+# ============================================================
 # TELA: FECHAMENTO DO PERÍODO (resumos + PDF) — só administrador
 # ============================================================
 elif pagina == "📑 Fechamento":
@@ -1903,14 +2030,31 @@ elif pagina == "📑 Fechamento":
             )
             st.caption(f"Total pago: **{fmt_moeda(total_pago)}**")
 
-        # 4) A receber por cliente (em aberto)
+        # 4) A receber por cliente (em aberto) — já descontando abatimentos
+        # e reembolsos registrados nesse mesmo período/cliente
         st.divider()
         st.markdown("**⏳ A receber por cliente (em aberto)**")
         a_receber = (
-            df_validos_fech.loc[df_validos_fech["pendente"] > 0.001]
-            .groupby("cliente", as_index=False)["pendente"].sum()
-            .sort_values("pendente", ascending=False)
+            df_validos_fech.groupby("cliente", as_index=False)["pendente"].sum()
         )
+
+        df_ab_fech = carregar_abatimentos(somente_ativos=True)
+        if not df_ab_fech.empty:
+            datas_ab_fech = pd.to_datetime(df_ab_fech["data"]).dt.date
+            df_ab_fech = df_ab_fech.loc[
+                (datas_ab_fech >= data_ini_fech) & (datas_ab_fech <= data_fim_fech)
+            ]
+            if cliente_filtro_fech != "Todos":
+                df_ab_fech = df_ab_fech.loc[df_ab_fech["cliente"] == cliente_filtro_fech]
+            abatido_por_cliente_fech = df_ab_fech.groupby("cliente")["valor"].sum()
+        else:
+            abatido_por_cliente_fech = pd.Series(dtype=float)
+
+        a_receber["pendente"] = (
+            a_receber["pendente"] - a_receber["cliente"].map(abatido_por_cliente_fech).fillna(0.0)
+        ).round(2).clip(lower=0)
+        a_receber = a_receber.loc[a_receber["pendente"] > 0.001].sort_values("pendente", ascending=False)
+
         total_receber = a_receber["pendente"].sum() if not a_receber.empty else 0.0
         a_receber_pdf = list(a_receber.itertuples(index=False, name=None)) if not a_receber.empty else []
         if a_receber.empty:
@@ -1924,6 +2068,11 @@ elif pagina == "📑 Fechamento":
                 },
             )
             st.caption(f"Total a receber: **{fmt_moeda(total_receber)}**")
+            if abatido_por_cliente_fech.sum() > 0.001:
+                st.caption(
+                    f"(já descontado {fmt_moeda(abatido_por_cliente_fech.sum())} "
+                    "em abatimentos/reembolsos do período)"
+                )
 
         # --- gerar PDF com as visões acima ---
         with col_pdf:
@@ -2014,24 +2163,44 @@ elif pagina == "📊 Resumo por cliente":
         def fmt_moeda(v: float) -> str:
             return f"R$ {v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
-        m1, m2, m3 = st.columns(3)
-        m1.metric("Total geral", fmt_moeda(df_all["total"].sum()))
-        m2.metric("Recebido", fmt_moeda(df_all["valor_pago"].sum()))
-        m3.metric("⏳ A receber", fmt_moeda(df_all["pendente"].sum()))
-
         resumo = (
             df_all.groupby("cliente", as_index=False)[["total", "valor_pago", "pendente"]]
             .sum()
-            .sort_values("pendente", ascending=False)
         )
+
+        # abate os abatimentos/reembolsos registrados (crédito direto no
+        # cliente, fora do fluxo de pagamento de um pedido específico)
+        df_ab_resumo = carregar_abatimentos(somente_ativos=True)
+        if not df_ab_resumo.empty:
+            if data_ini_resumo is not None:
+                datas_ab = pd.to_datetime(df_ab_resumo["data"]).dt.date
+                df_ab_resumo = df_ab_resumo.loc[
+                    (datas_ab >= data_ini_resumo) & (datas_ab <= data_fim_resumo)
+                ]
+            abatido_por_cliente = df_ab_resumo.groupby("cliente")["valor"].sum()
+        else:
+            abatido_por_cliente = pd.Series(dtype=float)
+
+        resumo["abatido"] = resumo["cliente"].map(abatido_por_cliente).fillna(0.0).round(2)
+        resumo["pendente"] = (resumo["pendente"] - resumo["abatido"]).round(2).clip(lower=0)
+        resumo = resumo.sort_values("pendente", ascending=False)
+
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Total geral", fmt_moeda(df_all["total"].sum()))
+        m2.metric("Recebido", fmt_moeda(df_all["valor_pago"].sum()))
+        m3.metric("⏳ A receber", fmt_moeda(resumo["pendente"].sum()))
+        if resumo["abatido"].sum() > 0.001:
+            st.caption(f"(já descontado {fmt_moeda(resumo['abatido'].sum())} em abatimentos/reembolsos)")
+
         st.dataframe(
-            resumo,
+            resumo[["cliente", "total", "valor_pago", "abatido", "pendente"]],
             hide_index=True,
             use_container_width=True,
             column_config={
                 "cliente": st.column_config.TextColumn("Cliente"),
                 "total": st.column_config.NumberColumn("Total (R$)", format="R$ %.2f"),
                 "valor_pago": st.column_config.NumberColumn("Pago (R$)", format="R$ %.2f"),
+                "abatido": st.column_config.NumberColumn("Abatido (R$)", format="R$ %.2f"),
                 "pendente": st.column_config.NumberColumn("Devendo (R$)", format="R$ %.2f"),
             },
         )
