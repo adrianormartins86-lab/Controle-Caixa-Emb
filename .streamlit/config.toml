@@ -6,3 +6,6 @@ backgroundColor = "#FFFFFF"          # fundo branco
 secondaryBackgroundColor = "#EEF3FB" # azul bem claro (inputs, expanders)
 textColor = "#12274E"                # azul-escuro para texto
 font = "sans serif"
+
+[server]
+enableStaticServing = true  # libera a pasta "static/" (ícones e manifest do app instalável)
