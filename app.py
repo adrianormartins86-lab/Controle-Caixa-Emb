@@ -404,54 +404,6 @@ def destacar_menu_colapsado():
     )
 
 
-def preparar_pwa():
-    """Deixa o app "instalável" (vira um atalho/ícone no celular ou notebook,
-    igual um aplicativo de verdade). Isso é feito injetando o manifest.json e
-    os ícones (servidos pela pasta static/) no <head> da página, e guardando
-    o evento nativo de instalação do navegador (beforeinstallprompt) numa
-    variável global do parent, para o botão "Instalar App" poder usá-lo
-    depois, em qualquer página do app.
-    """
-    components.html(
-        """
-        <script>
-        const win = window.parent;
-        const doc = win.document;
-
-        if (!doc.body.dataset.pwaPreparado) {
-            doc.body.dataset.pwaPreparado = '1';
-
-            const link = doc.createElement('link');
-            link.rel = 'manifest';
-            link.href = '/app/static/manifest.json';
-            doc.head.appendChild(link);
-
-            const tema = doc.createElement('meta');
-            tema.name = 'theme-color';
-            tema.content = '#0B3D91';
-            doc.head.appendChild(tema);
-
-            const touchIcon = doc.createElement('link');
-            touchIcon.rel = 'apple-touch-icon';
-            touchIcon.href = '/app/static/icon-192.png';
-            doc.head.appendChild(touchIcon);
-
-            win.addEventListener('beforeinstallprompt', (ev) => {
-                ev.preventDefault();
-                win.__pwaDeferredPrompt = ev;
-            });
-
-            win.addEventListener('appinstalled', () => {
-                win.__pwaInstalled = true;
-                win.__pwaDeferredPrompt = null;
-            });
-        }
-        </script>
-        """,
-        height=0,
-    )
-
-
 def rolar_tela(alvo: str = "topo"):
     """Rola a tela depois de um rerun. alvo: 'topo' ou um seletor CSS."""
     if alvo == "topo":
@@ -887,7 +839,6 @@ with st.sidebar:
 bloquear_teclado()
 ux_mobile()
 destacar_menu_colapsado()
-preparar_pwa()
 
 # ============================================================
 # TELA: CADASTROS (Produtos, Missões, Clientes)
@@ -2481,79 +2432,45 @@ elif pagina == "📱 Gerar Cobrança":
 elif pagina == "📲 Instalar App":
     st.markdown("### 📲 Instalar o App")
     st.caption(
-        "Instala um atalho deste sistema na tela do seu celular ou notebook, "
-        "igual um aplicativo de verdade — abre direto, sem precisar digitar o "
-        "endereço no navegador."
+        "Cria um atalho deste sistema na tela do seu celular ou computador — "
+        "abre direto, sem precisar digitar o endereço no navegador. É rapidinho, "
+        "escolha o seu aparelho abaixo:"
     )
 
-    components.html(
-        f"""
-        <div id="pwa-caixa-emb" style="font-family: sans-serif;">
-          <style>
-            #pwa-caixa-emb .pwa-btn {{
-                background: {MAGENTA};
-                color: #FFFFFF;
-                border: none;
-                border-radius: 8px;
-                padding: 0.7rem 1.4rem;
-                font-size: 1rem;
-                font-weight: 700;
-                cursor: pointer;
-                width: 100%;
-            }}
-            #pwa-caixa-emb .pwa-btn:active {{ background: {MAGENTA_HOVER}; }}
-            #pwa-caixa-emb .pwa-msg {{
-                background: {AZUL_CLARO};
-                color: {AZUL_ESCURO};
-                border-radius: 8px;
-                padding: 0.9rem 1rem;
-                font-size: 0.95rem;
-                line-height: 1.5;
-            }}
-          </style>
-          <div id="pwa-conteudo">Carregando…</div>
-        </div>
-        <script>
-        const win = window.parent;
-        const alvo = document.getElementById('pwa-conteudo');
+    aba_android, aba_iphone, aba_pc = st.tabs(["📱 Android", "🍎 iPhone / iPad", "💻 Computador"])
 
-        const ehIOS = /iphone|ipad|ipod/i.test(win.navigator.userAgent);
-        const jaInstalado = win.matchMedia('(display-mode: standalone)').matches
-            || win.navigator.standalone === true
-            || win.__pwaInstalled === true;
+    with aba_android:
+        st.markdown(
+            """
+1. Abra este site no navegador **Chrome** do celular.
+2. Toque nos **três pontinhos (⋮)** no canto superior direito.
+3. Toque em **"Instalar app"** (ou **"Adicionar à tela inicial"**).
+4. Confirme. Pronto — o ícone aparece na tela do seu celular, igual um app.
+            """
+        )
 
-        function render() {{
-            if (jaInstalado) {{
-                alvo.innerHTML = '<div class="pwa-msg">✅ Este app já está instalado neste aparelho.</div>';
-            }} else if (ehIOS) {{
-                alvo.innerHTML = '<div class="pwa-msg">📱 No iPhone/iPad: toque no ícone de compartilhar '
-                    + '(o quadrado com uma seta ↑) na barra do Safari e depois em '
-                    + '<b>"Adicionar à Tela de Início"</b>.</div>';
-            }} else if (win.__pwaDeferredPrompt) {{
-                alvo.innerHTML = '<button class="pwa-btn" id="btn-instalar-pwa">📲 Instalar App</button>';
-                document.getElementById('btn-instalar-pwa').onclick = async () => {{
-                    const evento = win.__pwaDeferredPrompt;
-                    if (!evento) return;
-                    evento.prompt();
-                    const escolha = await evento.userChoice;
-                    win.__pwaDeferredPrompt = null;
-                    if (escolha.outcome === 'accepted') {{
-                        alvo.innerHTML = '<div class="pwa-msg">✅ App instalado! Procure o ícone na tela do seu aparelho.</div>';
-                    }} else {{
-                        render();
-                    }}
-                }};
-            }} else {{
-                alvo.innerHTML = '<div class="pwa-msg">Seu navegador ainda não liberou a instalação automática '
-                    + '(isso pode acontecer nas primeiras vezes que você acessa o site, ou fora do Chrome/Edge). '
-                    + 'Tente pelo menu (⋮ ou ≡) do navegador, procurando por <b>"Instalar app"</b> ou '
-                    + '<b>"Adicionar à tela inicial"</b>.</div>';
-            }}
-        }}
+    with aba_iphone:
+        st.markdown(
+            """
+1. Abra este site no **Safari** (precisa ser o Safari, outros navegadores do iPhone não deixam instalar).
+2. Toque no ícone de **Compartilhar** (o quadrado com uma seta ↑), na parte de baixo da tela.
+3. Role as opções e toque em **"Adicionar à Tela de Início"**.
+4. Toque em **"Adicionar"**. Pronto — o ícone aparece na tela do seu iPhone.
+            """
+        )
 
-        render();
-        win.addEventListener('appinstalled', render);
-        </script>
-        """,
-        height=190,
+    with aba_pc:
+        st.markdown(
+            """
+1. Abra este site no **Chrome** ou **Edge** do computador.
+2. Procure um ícone de **instalar** (☐⇩ ou uma tela pequena) do lado direito, dentro da barra de endereço. Se não aparecer, toque nos **três pontinhos (⋮)** no canto superior direito.
+3. Toque em **"Instalar app"** (pode aparecer como "Instalar Controle Caixa EMB..." ou dentro de um submenu **"Salvar e compartilhar" / "Apps"**).
+4. Confirme. Pronto — abre uma janela própria, igual um programa instalado.
+            """
+        )
+
+    st.caption(
+        "Não achou a opção? Alguns navegadores (Firefox, navegadores dentro de outros apps, etc.) "
+        "não têm esse recurso — nesses casos, o jeito é continuar acessando pelo link mesmo, "
+        "ou adicionar aos favoritos."
     )
