@@ -558,7 +558,12 @@ def clientes_existentes_no_historico() -> list[str]:
     return sorted({d["cliente"] for d in dados})
 
 # Formas de pagamento aceitas
-FORMAS_PAGAMENTO = ["Dinheiro", "Pix", "Cartão Débito", "Cartão Crédito", "Bonificação"]
+# "Abatimento/Reembolso" é usado quando o cliente amortiza o valor pendente
+# com produto/serviço (ou outra compensação) em vez de dinheiro/pix/cartão.
+FORMAS_PAGAMENTO = ["Dinheiro", "Pix", "Cartão Débito", "Cartão Crédito", "Bonificação", "Abatimento/Reembolso"]
+
+def fmt_moeda(v: float) -> str:
+    return f"R$ {v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
 @st.cache_data(ttl=300)
 def carregar_config() -> dict:
@@ -741,7 +746,7 @@ def gerar_pdf_fechamento(periodo_txt, por_forma, total_receb, por_produto,
 # todos veem "Configurações", mas dentro dela só o cadastro de clientes
 # fica liberado para o perfil operador.
 MENU_USUARIO = ["🧾 Lançamento", "📋 Extrato", "⚙️ Configurações"]
-MENU_ADMIN = ["🧾 Lançamento", "📋 Extrato", "📊 Resumo por cliente",
+MENU_ADMIN = ["🧾 Lançamento", "📋 Extrato", "📑 Fechamento", "📊 Resumo por cliente",
               "📱 Gerar Cobrança", "⚙️ Configurações"]
 
 with st.sidebar:
@@ -1480,17 +1485,11 @@ elif pagina == "📋 Extrato":
         df_validos = df.loc[~df["excluido"]] if "excluido" in df.columns else df
         total_pendente = df_validos["pendente"].sum()
 
-        m1, m2, m3, m4 = st.columns(4)
-        m1.metric("Total no período", fmt_moeda(df_validos["total"].sum()))
-        m2.metric("⏳ A receber", fmt_moeda(total_pendente))
-        m3.metric("Pedidos", df_validos["pedido_id"].nunique())
-        m4.metric("Clientes", df_validos["cliente"].nunique())
-
         # ------------------------------------------------------------
-        # Visão AGRUPADA POR PEDIDO (uma linha por pedido)
+        # Visão AGRUPADA POR PEDIDO (uma linha por pedido) — montada aqui
+        # em cima porque as ações rápidas de editar/excluir (mais abaixo)
+        # também precisam dela.
         # ------------------------------------------------------------
-        st.markdown("#### 📦 Pedidos")
-
         def resumo_itens(sub: pd.DataFrame) -> str:
             partes = []
             for _, r in sub.iterrows():
@@ -1519,6 +1518,128 @@ elif pagina == "📋 Extrato":
                                    else "⏳ Pendente")),
             })
         df_ped = pd.DataFrame(grupos).sort_values(["situacao", "cliente"])
+
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Total no período", fmt_moeda(df_validos["total"].sum()))
+        m2.metric("⏳ A receber", fmt_moeda(total_pendente))
+        m3.metric("Pedidos", df_validos["pedido_id"].nunique())
+        m4.metric("Clientes", df_validos["cliente"].nunique())
+
+        # ------------------------------------------------------------
+        # Ações rápidas (editar / excluir pedido) — junto com os filtros,
+        # no começo do relatório, pra facilitar correções.
+        # ------------------------------------------------------------
+        if EH_ADMIN and not df_ped.empty:
+            col_ed, col_ex = st.columns(2)
+            with col_ed:
+                with st.expander("✏️ Editar um pedido (cliente / missão / data / observação)"):
+                    pids_ed = df_ped["pedido_id"].tolist()
+
+                    def formata_pedido_edicao(pid):
+                        p = df_ped.loc[df_ped["pedido_id"] == pid].iloc[0]
+                        return f"{p['data_lancamento']} | {p['cliente']} | {p['evento']} | {p['itens']} — R$ {p['total']:.2f}"
+
+                    pid_editar = st.selectbox(
+                        "Selecione o pedido para editar",
+                        pids_ed,
+                        format_func=formata_pedido_edicao,
+                        key="sel_editar_pedido",
+                    )
+
+                    ped_ed = df_ped.loc[df_ped["pedido_id"] == pid_editar].iloc[0]
+
+                    # opções de missão e cliente
+                    df_ev_ed = carregar_eventos(somente_ativos=False)
+                    opcoes_missao = df_ev_ed["nome"].tolist() if not df_ev_ed.empty else []
+                    if ped_ed["evento"] and ped_ed["evento"] not in opcoes_missao:
+                        opcoes_missao = [ped_ed["evento"]] + opcoes_missao
+
+                    df_cli_ed = carregar_clientes(somente_ativos=False)
+                    opcoes_cliente = df_cli_ed["nome"].tolist() if not df_cli_ed.empty else []
+                    if ped_ed["cliente"] and ped_ed["cliente"] not in opcoes_cliente:
+                        opcoes_cliente = [ped_ed["cliente"]] + opcoes_cliente
+
+                    with st.form("form_editar_pedido"):
+                        ec1, ec2 = st.columns(2)
+                        with ec1:
+                            novo_cliente = st.selectbox(
+                                "Cliente",
+                                opcoes_cliente,
+                                index=opcoes_cliente.index(ped_ed["cliente"]) if ped_ed["cliente"] in opcoes_cliente else 0,
+                            )
+                            nova_missao = st.selectbox(
+                                "Missão",
+                                opcoes_missao,
+                                index=opcoes_missao.index(ped_ed["evento"]) if ped_ed["evento"] in opcoes_missao else 0,
+                            )
+                        with ec2:
+                            # data atual do pedido (dd/mm/aaaa -> date)
+                            try:
+                                data_atual = datetime.strptime(ped_ed["data_lancamento"], "%d/%m/%Y").date()
+                            except Exception:
+                                data_atual = hoje_br()
+                            nova_data = st.date_input("Data", value=data_atual, format="DD/MM/YYYY")
+                            nova_obs = st.text_input(
+                                "Observação do pedido",
+                                value=ped_ed["observacao"] if pd.notna(ped_ed["observacao"]) and ped_ed["observacao"] else "",
+                            )
+
+                        salvar_ed = st.form_submit_button("💾 Salvar alterações", type="primary")
+
+                    if salvar_ed:
+                        sb.table("lancamentos").update({
+                            "cliente": novo_cliente.strip().title(),
+                            "evento": nova_missao,
+                            "data_lancamento": nova_data.isoformat(),
+                            "observacao": nova_obs.strip() or None,
+                            "alterado_por": USUARIO,
+                            "alterado_em": AGORA(),
+                        }).eq("pedido_id", pid_editar).execute()
+                        st.success(f"Pedido de {novo_cliente} atualizado!")
+                        st.rerun()
+
+            with col_ex:
+                with st.expander("🗑️ Excluir um pedido (correção)"):
+                    pids = df_ped["pedido_id"].tolist()
+
+                    # rótulo amigável: mesmo formato do quadro de Pedidos
+                    def formata_pedido_exclusao(pid):
+                        p = df_ped.loc[df_ped["pedido_id"] == pid].iloc[0]
+                        return f"{p['data_lancamento']} | {p['cliente']} | {p['itens']} — R$ {p['total']:.2f}"
+
+                    pid_excluir = st.selectbox(
+                        "Selecione o pedido para excluir",
+                        pids,
+                        format_func=formata_pedido_exclusao,
+                    )
+
+                    ped_sel = df_ped.loc[df_ped["pedido_id"] == pid_excluir].iloc[0]
+                    st.caption(
+                        f"**Pedido selecionado:** {ped_sel['data_lancamento']} — {ped_sel['cliente']} — "
+                        f"{ped_sel['itens']} — R$ {ped_sel['total']:.2f}"
+                    )
+
+                    motivo = st.text_input("Motivo da exclusão (obrigatório)")
+                    if st.button("Confirmar exclusão", type="secondary"):
+                        if not motivo.strip():
+                            st.error("Informe o motivo da exclusão.")
+                        else:
+                            # marca todos os itens do pedido como excluídos
+                            sb.table("lancamentos").update(
+                                {
+                                    "excluido": True,
+                                    "motivo_exclusao": motivo.strip(),
+                                    "excluido_por": USUARIO,
+                                    "excluido_em": datetime.now(TZ).isoformat(),
+                                }
+                            ).eq("pedido_id", pid_excluir).execute()
+                            st.success(f"Pedido de {ped_sel['cliente']} excluído (fica guardado com o motivo).")
+                            st.rerun()
+
+        # ------------------------------------------------------------
+        # Tabela de pedidos do período filtrado
+        # ------------------------------------------------------------
+        st.markdown("#### 📦 Pedidos")
 
         st.dataframe(
             df_ped[["data_lancamento", "data_pagamento", "cliente", "evento", "itens",
@@ -1635,250 +1756,194 @@ elif pagina == "📋 Extrato":
                     st.success(f"Todos os pedidos de {cliente_filtro} foram quitados!")
                     st.rerun()
 
-        # ------------------------------------------------------------
-        # Fechamento do dia (por forma de pgto / por produto / por cliente)
-        # ------------------------------------------------------------
-        if EH_ADMIN:
-            # Cabeçalho do fechamento: expander à esquerda, botão de PDF à direita
-            col_fech, col_pdf = st.columns([4, 1.2])
-            with col_fech:
-                exp_fech = st.expander("📑 Fechamento do período (resumos)")
-            with exp_fech:
-                fmt = fmt_moeda
 
-                # 1) Recebido por forma de pagamento
-                st.markdown("**💳 Recebido por forma de pagamento**")
-                recebidos = df_validos.loc[df_validos["valor_pago"] > 0.001].copy()
-                total_receb = 0.0
-                por_forma_pdf = []
-                if recebidos.empty or "forma_pagamento" not in recebidos.columns:
-                    st.caption("Nenhum recebimento registrado no período.")
-                else:
-                    recebidos["forma_pagamento"] = recebidos["forma_pagamento"].fillna("(não informado)")
-                    por_forma = recebidos.groupby("forma_pagamento", as_index=False)["valor_pago"].sum()
-                    total_receb = recebidos["valor_pago"].sum()
-                    por_forma_pdf = list(por_forma.itertuples(index=False, name=None))
-                    st.dataframe(
-                        por_forma, hide_index=True, use_container_width=True,
-                        column_config={
-                            "forma_pagamento": st.column_config.TextColumn("Forma"),
-                            "valor_pago": st.column_config.NumberColumn("Recebido", format="R$ %.2f"),
-                        },
-                    )
-                    st.caption(f"Total recebido: **{fmt(total_receb)}**")
+# ============================================================
+# TELA: FECHAMENTO DO PERÍODO (resumos + PDF) — só administrador
+# ============================================================
+elif pagina == "📑 Fechamento":
+    st.markdown("### 📑 Fechamento do período")
 
-                # 2) Consumo por produto
-                st.divider()
-                st.markdown("**🍔 Consumo por produto**")
-                por_produto = df_validos.groupby("produto", as_index=False).agg(
-                    qtde=("quantidade", "sum"), total=("total", "sum")
-                ).sort_values("total", ascending=False)
-                total_consumo = df_validos["total"].sum()
-                por_produto_pdf = list(por_produto.itertuples(index=False, name=None))
-                st.dataframe(
-                    por_produto, hide_index=True, use_container_width=True,
-                    column_config={
-                        "produto": st.column_config.TextColumn("Produto"),
-                        "qtde": st.column_config.NumberColumn("Qtde", format="%d"),
-                        "total": st.column_config.NumberColumn("Total", format="R$ %.2f"),
-                    },
+    df_ev_todos_fech = carregar_eventos(somente_ativos=False)
+    lista_missao_fech = ["Todos"] + (
+        df_ev_todos_fech["nome"].tolist() if not df_ev_todos_fech.empty else []
+    )
+
+    cli_historico_fech = clientes_existentes_no_historico()
+    df_cli_todos_fech = carregar_clientes(somente_ativos=False)
+    cli_cadastrados_fech = df_cli_todos_fech["nome"].tolist() if not df_cli_todos_fech.empty else []
+    lista_cli_fech = ["Todos"] + sorted(list(set(cli_historico_fech + cli_cadastrados_fech)))
+
+    modo_data_fech = st.radio(
+        "Filtrar por", ["Período", "Dia único"], horizontal=True, key="fech_modo_data"
+    )
+
+    g1, g2, g3, g4 = st.columns([1, 1, 1.2, 1.2])
+    if modo_data_fech == "Dia único":
+        with g1:
+            dia_fech = st.date_input("Dia", value=hoje_br(), format="DD/MM/YYYY", key="fech_dia")
+        data_ini_fech = data_fim_fech = dia_fech
+        with g2:
+            st.caption("")  # mantém o alinhamento das colunas
+    else:
+        with g1:
+            data_ini_fech = st.date_input(
+                "De", value=hoje_br() - timedelta(days=30), format="DD/MM/YYYY", key="fech_de"
+            )
+        with g2:
+            data_fim_fech = st.date_input(
+                "Até", value=hoje_br(), format="DD/MM/YYYY", key="fech_ate"
+            )
+    with g3:
+        cliente_filtro_fech = st.selectbox("Cliente", lista_cli_fech, key="fech_cliente")
+    with g4:
+        missao_filtro_fech = st.selectbox("Missão", lista_missao_fech, key="fech_missao")
+
+    df_fech = carregar_lancamentos(
+        data_ini_fech, data_fim_fech, cliente_filtro_fech, "Todos", missao_filtro_fech, False
+    )
+
+    if df_fech.empty:
+        st.info("Nenhum lançamento encontrado com esses filtros.")
+    else:
+        if "valor_pago" not in df_fech.columns:
+            df_fech["valor_pago"] = 0.0
+        df_fech["valor_pago"] = df_fech["valor_pago"].fillna(0.0)
+        df_fech["pendente"] = (df_fech["total"] - df_fech["valor_pago"]).round(2).clip(lower=0)
+        df_validos_fech = df_fech.loc[~df_fech["excluido"]] if "excluido" in df_fech.columns else df_fech
+
+        # --- período/legenda + botão de PDF logo abaixo dos filtros ---
+        if data_ini_fech == data_fim_fech:
+            periodo_txt = f"Dia: {data_fim_fech.strftime('%d/%m/%Y')}"
+        else:
+            periodo_txt = f"Período: {data_ini_fech.strftime('%d/%m/%Y')} a {data_fim_fech.strftime('%d/%m/%Y')}"
+        if missao_filtro_fech != "Todos":
+            periodo_txt += f"  •  Missão: {missao_filtro_fech}"
+        if cliente_filtro_fech != "Todos":
+            periodo_txt += f"  •  Cliente: {cliente_filtro_fech}"
+
+        col_legenda, col_pdf = st.columns([4, 1.2])
+        with col_legenda:
+            st.caption(periodo_txt)
+
+        st.divider()
+
+        # 1) Recebido por forma de pagamento
+        st.markdown("**💳 Recebido por forma de pagamento**")
+        recebidos = df_validos_fech.loc[df_validos_fech["valor_pago"] > 0.001].copy()
+        total_receb = 0.0
+        por_forma_pdf = []
+        if recebidos.empty or "forma_pagamento" not in recebidos.columns:
+            st.caption("Nenhum recebimento registrado no período.")
+        else:
+            recebidos["forma_pagamento"] = recebidos["forma_pagamento"].fillna("(não informado)")
+            por_forma = recebidos.groupby("forma_pagamento", as_index=False)["valor_pago"].sum()
+            total_receb = recebidos["valor_pago"].sum()
+            por_forma_pdf = list(por_forma.itertuples(index=False, name=None))
+            st.dataframe(
+                por_forma, hide_index=True, use_container_width=True,
+                column_config={
+                    "forma_pagamento": st.column_config.TextColumn("Forma"),
+                    "valor_pago": st.column_config.NumberColumn("Recebido", format="R$ %.2f"),
+                },
+            )
+            st.caption(f"Total recebido: **{fmt_moeda(total_receb)}**")
+
+        # 2) Consumo por produto
+        st.divider()
+        st.markdown("**🍔 Consumo por produto**")
+        por_produto = df_validos_fech.groupby("produto", as_index=False).agg(
+            qtde=("quantidade", "sum"), total=("total", "sum")
+        ).sort_values("total", ascending=False)
+        total_consumo = df_validos_fech["total"].sum()
+        por_produto_pdf = list(por_produto.itertuples(index=False, name=None))
+        st.dataframe(
+            por_produto, hide_index=True, use_container_width=True,
+            column_config={
+                "produto": st.column_config.TextColumn("Produto"),
+                "qtde": st.column_config.NumberColumn("Qtde", format="%d"),
+                "total": st.column_config.NumberColumn("Total", format="R$ %.2f"),
+            },
+        )
+        st.caption(f"Total do consumo: **{fmt_moeda(total_consumo)}**")
+
+        # Consumo por missão
+        st.divider()
+        st.markdown("**🎯 Consumo por missão**")
+        por_missao = df_validos_fech.groupby("evento", as_index=False)["total"].sum().sort_values("total", ascending=False)
+        total_missao = df_validos_fech["total"].sum()
+        por_missao_pdf = list(por_missao.itertuples(index=False, name=None))
+        st.dataframe(
+            por_missao, hide_index=True, use_container_width=True,
+            column_config={
+                "evento": st.column_config.TextColumn("Missão"),
+                "total": st.column_config.NumberColumn("Total", format="R$ %.2f"),
+            },
+        )
+        st.caption(f"Total geral: **{fmt_moeda(total_missao)}**")
+
+        # 3) Clientes que pagaram (total ou parcial)
+        st.divider()
+        st.markdown("**✅ Clientes que pagaram**")
+        pagantes = (
+            df_validos_fech.loc[df_validos_fech["valor_pago"] > 0.001]
+            .groupby("cliente", as_index=False)["valor_pago"].sum()
+            .sort_values("valor_pago", ascending=False)
+        )
+        total_pago = pagantes["valor_pago"].sum() if not pagantes.empty else 0.0
+        pagantes_pdf = list(pagantes.itertuples(index=False, name=None)) if not pagantes.empty else []
+        if pagantes.empty:
+            st.caption("Nenhum recebimento no período.")
+        else:
+            st.dataframe(
+                pagantes, hide_index=True, use_container_width=True,
+                column_config={
+                    "cliente": st.column_config.TextColumn("Cliente"),
+                    "valor_pago": st.column_config.NumberColumn("Pago", format="R$ %.2f"),
+                },
+            )
+            st.caption(f"Total pago: **{fmt_moeda(total_pago)}**")
+
+        # 4) A receber por cliente (em aberto)
+        st.divider()
+        st.markdown("**⏳ A receber por cliente (em aberto)**")
+        a_receber = (
+            df_validos_fech.loc[df_validos_fech["pendente"] > 0.001]
+            .groupby("cliente", as_index=False)["pendente"].sum()
+            .sort_values("pendente", ascending=False)
+        )
+        total_receber = a_receber["pendente"].sum() if not a_receber.empty else 0.0
+        a_receber_pdf = list(a_receber.itertuples(index=False, name=None)) if not a_receber.empty else []
+        if a_receber.empty:
+            st.caption("Nada em aberto. 🎉")
+        else:
+            st.dataframe(
+                a_receber, hide_index=True, use_container_width=True,
+                column_config={
+                    "cliente": st.column_config.TextColumn("Cliente"),
+                    "pendente": st.column_config.NumberColumn("Deve", format="R$ %.2f"),
+                },
+            )
+            st.caption(f"Total a receber: **{fmt_moeda(total_receber)}**")
+
+        # --- gerar PDF com as visões acima ---
+        with col_pdf:
+            try:
+                pdf_bytes = gerar_pdf_fechamento(
+                    periodo_txt, por_forma_pdf, total_receb, por_produto_pdf,
+                    total_consumo, pagantes_pdf, total_pago, a_receber_pdf, total_receber,
+                    por_missao_pdf, total_missao,
                 )
-                st.caption(f"Total do consumo: **{fmt(total_consumo)}**")
-
-                # Consumo por missão
-                st.divider()
-                st.markdown("**🎯 Consumo por missão**")
-                por_missao = df_validos.groupby("evento", as_index=False)["total"].sum().sort_values("total", ascending=False)
-                total_missao = df_validos["total"].sum()
-                por_missao_pdf = list(por_missao.itertuples(index=False, name=None))
-                st.dataframe(
-                    por_missao, hide_index=True, use_container_width=True,
-                    column_config={
-                        "evento": st.column_config.TextColumn("Missão"),
-                        "total": st.column_config.NumberColumn("Total", format="R$ %.2f"),
-                    },
+                prefixo_arquivo = "fechamento_dia" if data_ini_fech == data_fim_fech else "fechamento_periodo"
+                st.download_button(
+                    "📄 Baixar PDF",
+                    data=pdf_bytes,
+                    file_name=f"{prefixo_arquivo}_{data_fim_fech.strftime('%d-%m-%Y')}.pdf",
+                    mime="application/pdf",
+                    type="primary",
+                    use_container_width=True,
                 )
-                st.caption(f"Total geral: **{fmt(total_missao)}**")
-
-                # 3) Clientes que pagaram (total ou parcial)
-                st.divider()
-                st.markdown("**✅ Clientes que pagaram**")
-                pagantes = (
-                    df_validos.loc[df_validos["valor_pago"] > 0.001]
-                    .groupby("cliente", as_index=False)["valor_pago"].sum()
-                    .sort_values("valor_pago", ascending=False)
-                )
-                total_pago = pagantes["valor_pago"].sum() if not pagantes.empty else 0.0
-                pagantes_pdf = list(pagantes.itertuples(index=False, name=None)) if not pagantes.empty else []
-                if pagantes.empty:
-                    st.caption("Nenhum recebimento no período.")
-                else:
-                    st.dataframe(
-                        pagantes, hide_index=True, use_container_width=True,
-                        column_config={
-                            "cliente": st.column_config.TextColumn("Cliente"),
-                            "valor_pago": st.column_config.NumberColumn("Pago", format="R$ %.2f"),
-                        },
-                    )
-                    st.caption(f"Total pago: **{fmt(total_pago)}**")
-
-                # 4) A receber por cliente (em aberto)
-                st.divider()
-                st.markdown("**⏳ A receber por cliente (em aberto)**")
-                a_receber = (
-                    df_validos.loc[df_validos["pendente"] > 0.001]
-                    .groupby("cliente", as_index=False)["pendente"].sum()
-                    .sort_values("pendente", ascending=False)
-                )
-                total_receber = a_receber["pendente"].sum() if not a_receber.empty else 0.0
-                a_receber_pdf = list(a_receber.itertuples(index=False, name=None)) if not a_receber.empty else []
-                if a_receber.empty:
-                    st.caption("Nada em aberto. 🎉")
-                else:
-                    st.dataframe(
-                        a_receber, hide_index=True, use_container_width=True,
-                        column_config={
-                            "cliente": st.column_config.TextColumn("Cliente"),
-                            "pendente": st.column_config.NumberColumn("Deve", format="R$ %.2f"),
-                        },
-                    )
-                    st.caption(f"Total a receber: **{fmt(total_receber)}**")
-
-            # --- gerar PDF com as 4 visões (botão ao lado do cabeçalho) ---
-            if data_ini == data_fim:
-                periodo_txt = f"Dia: {data_fim.strftime('%d/%m/%Y')}"
-            else:
-                periodo_txt = f"Período: {data_ini.strftime('%d/%m/%Y')} a {data_fim.strftime('%d/%m/%Y')}"
-            if missao_filtro != "Todos":
-                periodo_txt += f"  •  Missão: {missao_filtro}"
-            if cliente_filtro != "Todos":
-                periodo_txt += f"  •  Cliente: {cliente_filtro}"
-            with col_pdf:
-                try:
-                    pdf_bytes = gerar_pdf_fechamento(
-                        periodo_txt, por_forma_pdf, total_receb, por_produto_pdf,
-                        total_consumo, pagantes_pdf, total_pago, a_receber_pdf, total_receber,
-                        por_missao_pdf, total_missao,
-                    )
-                    prefixo_arquivo = "fechamento_dia" if data_ini == data_fim else "fechamento_periodo"
-                    st.download_button(
-                        "📄 Baixar PDF",
-                        data=pdf_bytes,
-                        file_name=f"{prefixo_arquivo}_{data_fim.strftime('%d-%m-%Y')}.pdf",
-                        mime="application/pdf",
-                        type="primary",
-                        use_container_width=True,
-                    )
-                except Exception as e:
-                    st.error(f"Erro no PDF: {e}")
-
-        # edição do cabeçalho do pedido (cliente / missão / data / observação)
-        if EH_ADMIN and not df_ped.empty:
-            with st.expander("✏️ Editar um pedido (cliente / missão / data / observação)"):
-                pids_ed = df_ped["pedido_id"].tolist()
-
-                def formata_pedido_edicao(pid):
-                    p = df_ped.loc[df_ped["pedido_id"] == pid].iloc[0]
-                    return f"{p['data_lancamento']} | {p['cliente']} | {p['evento']} | {p['itens']} — R$ {p['total']:.2f}"
-
-                pid_editar = st.selectbox(
-                    "Selecione o pedido para editar",
-                    pids_ed,
-                    format_func=formata_pedido_edicao,
-                    key="sel_editar_pedido",
-                )
-
-                ped_ed = df_ped.loc[df_ped["pedido_id"] == pid_editar].iloc[0]
-
-                # opções de missão e cliente
-                df_ev_ed = carregar_eventos(somente_ativos=False)
-                opcoes_missao = df_ev_ed["nome"].tolist() if not df_ev_ed.empty else []
-                if ped_ed["evento"] and ped_ed["evento"] not in opcoes_missao:
-                    opcoes_missao = [ped_ed["evento"]] + opcoes_missao
-
-                df_cli_ed = carregar_clientes(somente_ativos=False)
-                opcoes_cliente = df_cli_ed["nome"].tolist() if not df_cli_ed.empty else []
-                if ped_ed["cliente"] and ped_ed["cliente"] not in opcoes_cliente:
-                    opcoes_cliente = [ped_ed["cliente"]] + opcoes_cliente
-
-                with st.form("form_editar_pedido"):
-                    ec1, ec2 = st.columns(2)
-                    with ec1:
-                        novo_cliente = st.selectbox(
-                            "Cliente",
-                            opcoes_cliente,
-                            index=opcoes_cliente.index(ped_ed["cliente"]) if ped_ed["cliente"] in opcoes_cliente else 0,
-                        )
-                        nova_missao = st.selectbox(
-                            "Missão",
-                            opcoes_missao,
-                            index=opcoes_missao.index(ped_ed["evento"]) if ped_ed["evento"] in opcoes_missao else 0,
-                        )
-                    with ec2:
-                        # data atual do pedido (dd/mm/aaaa -> date)
-                        try:
-                            data_atual = datetime.strptime(ped_ed["data_lancamento"], "%d/%m/%Y").date()
-                        except Exception:
-                            data_atual = hoje_br()
-                        nova_data = st.date_input("Data", value=data_atual, format="DD/MM/YYYY")
-                        nova_obs = st.text_input(
-                            "Observação do pedido",
-                            value=ped_ed["observacao"] if pd.notna(ped_ed["observacao"]) and ped_ed["observacao"] else "",
-                        )
-
-                    salvar_ed = st.form_submit_button("💾 Salvar alterações", type="primary")
-
-                if salvar_ed:
-                    sb.table("lancamentos").update({
-                        "cliente": novo_cliente.strip().title(),
-                        "evento": nova_missao,
-                        "data_lancamento": nova_data.isoformat(),
-                        "observacao": nova_obs.strip() or None,
-                        "alterado_por": USUARIO,
-                        "alterado_em": AGORA(),
-                    }).eq("pedido_id", pid_editar).execute()
-                    st.success(f"Pedido de {novo_cliente} atualizado!")
-                    st.rerun()
-
-        # exclusão LÓGICA por pedido (correção) - apaga o pedido inteiro
-        if EH_ADMIN and not df_ped.empty:
-            with st.expander("🗑️ Excluir um pedido (correção)"):
-                pids = df_ped["pedido_id"].tolist()
-
-                # rótulo amigável: mesmo formato do quadro de Pedidos
-                def formata_pedido_exclusao(pid):
-                    p = df_ped.loc[df_ped["pedido_id"] == pid].iloc[0]
-                    return f"{p['data_lancamento']} | {p['cliente']} | {p['itens']} — R$ {p['total']:.2f}"
-
-                pid_excluir = st.selectbox(
-                    "Selecione o pedido para excluir",
-                    pids,
-                    format_func=formata_pedido_exclusao,
-                )
-
-                ped_sel = df_ped.loc[df_ped["pedido_id"] == pid_excluir].iloc[0]
-                st.caption(
-                    f"**Pedido selecionado:** {ped_sel['data_lancamento']} — {ped_sel['cliente']} — "
-                    f"{ped_sel['itens']} — R$ {ped_sel['total']:.2f}"
-                )
-
-                motivo = st.text_input("Motivo da exclusão (obrigatório)")
-                if st.button("Confirmar exclusão", type="secondary"):
-                    if not motivo.strip():
-                        st.error("Informe o motivo da exclusão.")
-                    else:
-                        # marca todos os itens do pedido como excluídos
-                        sb.table("lancamentos").update(
-                            {
-                                "excluido": True,
-                                "motivo_exclusao": motivo.strip(),
-                                "excluido_por": USUARIO,
-                                "excluido_em": datetime.now(TZ).isoformat(),
-                            }
-                        ).eq("pedido_id", pid_excluir).execute()
-                        st.success(f"Pedido de {ped_sel['cliente']} excluído (fica guardado com o motivo).")
-                        st.rerun()
-
+            except Exception as e:
+                st.error(f"Erro no PDF: {e}")
 
 # ============================================================
 # TELA: RESUMO POR CLIENTE (todos os períodos)
