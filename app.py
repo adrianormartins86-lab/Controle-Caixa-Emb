@@ -818,8 +818,8 @@ def gerar_pdf_fechamento(periodo_txt, por_forma, total_receb, por_produto,
 # todos veem "Configurações", mas dentro dela só o cadastro de clientes
 # fica liberado para o perfil operador.
 MENU_USUARIO = ["🧾 Lançamento", "📋 Extrato", "⚙️ Configurações"]
-MENU_ADMIN = ["🧾 Lançamento", "📋 Extrato", "🔄 Abatimento/Reembolso", "📑 Fechamento",
-              "📊 Resumo por cliente", "💰 Pgtos. Pendentes", "📱 Gerar Cobrança", "⚙️ Configurações"]
+MENU_ADMIN = ["🧾 Lançamento", "📋 Extrato", "📊 Resumo por cliente", "📑 Fechamento",
+              "💰 Pgtos. Pendentes", "🔄 Abatimento/Reembolso", "📱 Gerar Cobrança", "⚙️ Configurações"]
 
 with st.sidebar:
     st.caption(f"👤 Conectado como **{USUARIO}**")
@@ -2351,13 +2351,6 @@ elif pagina == "💰 Pgtos. Pendentes":
                             falta = ped["total"] - novo_valor
                             st.success(f"Registrado R$ {novo_valor:.2f} de {ped['cliente']} ({forma_sel}) — resta R$ {falta:.2f}.")
                         st.rerun()
-
-                    # botão rápido de quitar tudo com a forma escolhida
-                    if ped["pendente"] > 0.001:
-                        if c6.button("✔️ Quitar tudo", key=f"pgto_quit_{pid}", use_container_width=True):
-                            registrar_pagamento_pedido(pid, float(ped["total"]), df_validos_pgto, forma_sel)
-                            st.success(f"Pedido de {ped['cliente']} quitado ({forma_sel})!")
-                            st.rerun()
 
             if cliente_filtro_pgto != "Todos":
                 if st.button(f"✅ Quitar TODOS os pedidos abertos de {cliente_filtro_pgto}", type="primary"):
