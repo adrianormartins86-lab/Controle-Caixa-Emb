@@ -819,7 +819,7 @@ def gerar_pdf_fechamento(periodo_txt, por_forma, total_receb, por_produto,
 # fica liberado para o perfil operador.
 MENU_USUARIO = ["🧾 Lançamento", "📋 Extrato", "⚙️ Configurações"]
 MENU_ADMIN = ["🧾 Lançamento", "📋 Extrato", "🔄 Abatimento/Reembolso", "📑 Fechamento",
-              "📊 Resumo por cliente", "📱 Gerar Cobrança", "⚙️ Configurações"]
+              "📊 Resumo por cliente", "💰 Pgtos. Pendentes", "📱 Gerar Cobrança", "⚙️ Configurações"]
 
 with st.sidebar:
     st.caption(f"👤 Conectado como **{USUARIO}**")
@@ -1787,80 +1787,6 @@ elif pagina == "📋 Extrato":
                 },
             )
 
-        # ------------------------------------------------------------
-        # Registrar / ajustar recebimento por pedido (somente administrador)
-        # ------------------------------------------------------------
-        def registrar_pagamento_pedido(pedido_id: str, valor_recebido: float, df_ref: pd.DataFrame,
-                                        forma: str | None = None):
-            """Distribui o valor recebido entre as linhas do pedido e grava valor_pago/pago/forma."""
-            itens = df_ref.loc[df_ref["pedido_id"] == pedido_id].sort_values("id")
-            restante = round(valor_recebido, 2)
-            total_pedido = round(itens["total"].sum(), 2)
-            quitou_tudo = valor_recebido >= total_pedido - 0.001
-            ids = itens["id"].tolist()
-            for pos, (_, item) in enumerate(itens.iterrows()):
-                if pos == len(ids) - 1:
-                    pago_item = round(restante, 2)
-                else:
-                    pago_item = round(min(item["total"], restante), 2)
-                    restante = round(restante - pago_item, 2)
-                update = {
-                    "valor_pago": pago_item,
-                    "pago": pago_item >= item["total"] - 0.001,
-                    "data_pagamento": hoje_br().isoformat() if quitou_tudo else None,
-                    "alterado_por": USUARIO,
-                    "alterado_em": AGORA(),
-                }
-                if forma:
-                    update["forma_pagamento"] = forma
-                sb.table("lancamentos").update(update).eq("id", int(item["id"])).execute()
-
-        pedidos_abertos = df_ped.loc[df_ped["pendente"] > 0.001]
-        if EH_ADMIN and not pedidos_abertos.empty:
-            st.markdown("#### 💰 Receber / ajustar pagamento")
-            st.caption("Escolha a forma, digite quanto o cliente pagou e salve. O sistema recalcula o pendente sozinho.")
-
-            for _, ped in pedidos_abertos.iterrows():
-                pid = ped["pedido_id"]
-                with st.container(border=True):
-                    c1, c2, c3, c4, c5, c6 = st.columns([1.5, 2.4, 1.1, 1.4, 1.5, 1.2])
-                    c1.markdown(f"**{ped['cliente']}**  \n:gray[{ped['data_lancamento']}]")
-                    c2.markdown(f"{ped['itens']}")
-                    c3.markdown(f"Total  \n**{fmt_moeda(ped['total'])}**")
-                    forma_sel = c4.selectbox("Forma", FORMAS_PAGAMENTO, key=f"fp_{pid}")
-                    novo_valor = c5.number_input(
-                        "Valor pago (R$)",
-                        min_value=0.0,
-                        max_value=float(ped["total"]),
-                        value=float(ped["valor_pago"]),
-                        step=0.50,
-                        format="%.2f",
-                        key=f"vp_{pid}",
-                    )
-                    c6.markdown("<br>", unsafe_allow_html=True)
-                    if c6.button("💾 Salvar", key=f"save_{pid}", use_container_width=True):
-                        registrar_pagamento_pedido(pid, novo_valor, df_validos, forma_sel)
-                        if novo_valor >= ped["total"] - 0.001:
-                            st.success(f"Pedido de {ped['cliente']} quitado ({forma_sel})!")
-                        else:
-                            falta = ped["total"] - novo_valor
-                            st.success(f"Registrado R$ {novo_valor:.2f} de {ped['cliente']} ({forma_sel}) — resta R$ {falta:.2f}.")
-                        st.rerun()
-
-                    # botão rápido de quitar tudo com a forma escolhida
-                    if ped["pendente"] > 0.001:
-                        if c6.button("✔️ Quitar tudo", key=f"quit_{pid}", use_container_width=True):
-                            registrar_pagamento_pedido(pid, float(ped["total"]), df_validos, forma_sel)
-                            st.success(f"Pedido de {ped['cliente']} quitado ({forma_sel})!")
-                            st.rerun()
-
-            if cliente_filtro != "Todos":
-                if st.button(f"✅ Quitar TODOS os pedidos abertos de {cliente_filtro}", type="primary"):
-                    for _, ped in pedidos_abertos.iterrows():
-                        registrar_pagamento_pedido(ped["pedido_id"], float(ped["total"]), df_validos)
-                    st.success(f"Todos os pedidos de {cliente_filtro} foram quitados!")
-                    st.rerun()
-
 
 # ============================================================
 # TELA: ABATIMENTO/REEMBOLSO — crédito lançado direto no cliente,
@@ -2284,6 +2210,162 @@ elif pagina == "📊 Resumo por cliente":
                 "pendente": st.column_config.NumberColumn("Devendo (R$)", format="R$ %.2f"),
             },
         )
+
+# ============================================================
+# TELA: PAGAMENTOS PENDENTES (receber / ajustar) — só administrador
+# ============================================================
+elif pagina == "💰 Pgtos. Pendentes":
+    st.markdown("### 💰 Pagamentos Pendentes")
+
+    df_ev_todos_pgto = carregar_eventos(somente_ativos=False)
+    lista_missao_pgto = ["Todos"] + (
+        df_ev_todos_pgto["nome"].tolist() if not df_ev_todos_pgto.empty else []
+    )
+
+    cli_historico_pgto = clientes_existentes_no_historico()
+    df_cli_todos_pgto = carregar_clientes(somente_ativos=False)
+    cli_cadastrados_pgto = df_cli_todos_pgto["nome"].tolist() if not df_cli_todos_pgto.empty else []
+    lista_cli_pgto = ["Todos"] + sorted(list(set(cli_historico_pgto + cli_cadastrados_pgto)))
+
+    modo_data_pgto = st.radio(
+        "Filtrar por", ["Período", "Dia único"], horizontal=True, key="pgto_modo_data"
+    )
+
+    p1, p2, p3, p4, p5 = st.columns([1, 1, 1.4, 1.1, 1.1])
+    if modo_data_pgto == "Dia único":
+        with p1:
+            dia_pgto = st.date_input("Dia", value=hoje_br(), format="DD/MM/YYYY", key="pgto_dia")
+        data_ini_pgto = data_fim_pgto = dia_pgto
+        with p2:
+            st.caption("")  # mantém o alinhamento das colunas abaixo
+    else:
+        with p1:
+            data_ini_pgto = st.date_input(
+                "De", value=hoje_br() - timedelta(days=30), format="DD/MM/YYYY", key="pgto_de"
+            )
+        with p2:
+            data_fim_pgto = st.date_input(
+                "Até", value=hoje_br(), format="DD/MM/YYYY", key="pgto_ate"
+            )
+    with p3:
+        cliente_filtro_pgto = st.selectbox("Cliente", lista_cli_pgto, key="pgto_cliente")
+    with p4:
+        missao_filtro_pgto = st.selectbox("Missão", lista_missao_pgto, key="pgto_missao")
+    with p5:
+        situacao_filtro_pgto = st.selectbox(
+            "Situação", ["Todos", "⏳ Pendentes", "✅ Pagos"], key="pgto_situacao"
+        )
+
+    df_pgto = carregar_lancamentos(
+        data_ini_pgto, data_fim_pgto, cliente_filtro_pgto, situacao_filtro_pgto,
+        missao_filtro_pgto, False,
+    )
+
+    if df_pgto.empty:
+        st.info("Nenhum lançamento encontrado com esses filtros.")
+    else:
+        if "valor_pago" not in df_pgto.columns:
+            df_pgto["valor_pago"] = 0.0
+        df_pgto["valor_pago"] = df_pgto["valor_pago"].fillna(0.0)
+        df_pgto["pendente"] = (df_pgto["total"] - df_pgto["valor_pago"]).round(2).clip(lower=0)
+        df_pgto["data_lancamento_fmt"] = pd.to_datetime(df_pgto["data_lancamento"]).dt.strftime("%d/%m/%Y")
+        df_validos_pgto = df_pgto.loc[~df_pgto["excluido"]] if "excluido" in df_pgto.columns else df_pgto
+
+        def resumo_itens_pgto(sub: pd.DataFrame) -> str:
+            partes = []
+            for _, r in sub.iterrows():
+                p = f"{int(r['quantidade'])}x {r['produto']}"
+                if r.get("obs_item"):
+                    p += f" ({r['obs_item']})"
+                partes.append(p)
+            return ", ".join(partes)
+
+        grupos_pgto = []
+        for pid, sub in df_validos_pgto.groupby("pedido_id"):
+            grupos_pgto.append({
+                "pedido_id": pid,
+                "data_lancamento": sub["data_lancamento_fmt"].iloc[0],
+                "cliente": sub["cliente"].iloc[0],
+                "itens": resumo_itens_pgto(sub),
+                "total": round(sub["total"].sum(), 2),
+                "valor_pago": round(sub["valor_pago"].sum(), 2),
+                "pendente": round(sub["pendente"].sum(), 2),
+            })
+        df_ped_pgto = pd.DataFrame(grupos_pgto)
+
+        def registrar_pagamento_pedido(pedido_id: str, valor_recebido: float, df_ref: pd.DataFrame,
+                                        forma: str | None = None):
+            """Distribui o valor recebido entre as linhas do pedido e grava valor_pago/pago/forma."""
+            itens = df_ref.loc[df_ref["pedido_id"] == pedido_id].sort_values("id")
+            restante = round(valor_recebido, 2)
+            total_pedido = round(itens["total"].sum(), 2)
+            quitou_tudo = valor_recebido >= total_pedido - 0.001
+            ids = itens["id"].tolist()
+            for pos, (_, item) in enumerate(itens.iterrows()):
+                if pos == len(ids) - 1:
+                    pago_item = round(restante, 2)
+                else:
+                    pago_item = round(min(item["total"], restante), 2)
+                    restante = round(restante - pago_item, 2)
+                update = {
+                    "valor_pago": pago_item,
+                    "pago": pago_item >= item["total"] - 0.001,
+                    "data_pagamento": hoje_br().isoformat() if quitou_tudo else None,
+                    "alterado_por": USUARIO,
+                    "alterado_em": AGORA(),
+                }
+                if forma:
+                    update["forma_pagamento"] = forma
+                sb.table("lancamentos").update(update).eq("id", int(item["id"])).execute()
+
+        pedidos_abertos_pgto = df_ped_pgto.loc[df_ped_pgto["pendente"] > 0.001] if not df_ped_pgto.empty else df_ped_pgto
+
+        if pedidos_abertos_pgto.empty:
+            st.success("Nenhum pagamento pendente com esses filtros. 🎉")
+        else:
+            st.caption("Escolha a forma, digite quanto o cliente pagou e salve. O sistema recalcula o pendente sozinho.")
+
+            for _, ped in pedidos_abertos_pgto.iterrows():
+                pid = ped["pedido_id"]
+                with st.container(border=True):
+                    c1, c2, c3, c4, c5, c6 = st.columns([1.5, 2.4, 1.1, 1.4, 1.5, 1.2])
+                    c1.markdown(f"**{ped['cliente']}**  \n:gray[{ped['data_lancamento']}]")
+                    c2.markdown(f"{ped['itens']}")
+                    c3.markdown(f"Total  \n**{fmt_moeda(ped['total'])}**")
+                    forma_sel = c4.selectbox("Forma", FORMAS_PAGAMENTO, key=f"pgto_fp_{pid}")
+                    novo_valor = c5.number_input(
+                        "Valor pago (R$)",
+                        min_value=0.0,
+                        max_value=float(ped["total"]),
+                        value=float(ped["valor_pago"]),
+                        step=0.50,
+                        format="%.2f",
+                        key=f"pgto_vp_{pid}",
+                    )
+                    c6.markdown("<br>", unsafe_allow_html=True)
+                    if c6.button("💾 Salvar", key=f"pgto_save_{pid}", use_container_width=True):
+                        registrar_pagamento_pedido(pid, novo_valor, df_validos_pgto, forma_sel)
+                        if novo_valor >= ped["total"] - 0.001:
+                            st.success(f"Pedido de {ped['cliente']} quitado ({forma_sel})!")
+                        else:
+                            falta = ped["total"] - novo_valor
+                            st.success(f"Registrado R$ {novo_valor:.2f} de {ped['cliente']} ({forma_sel}) — resta R$ {falta:.2f}.")
+                        st.rerun()
+
+                    # botão rápido de quitar tudo com a forma escolhida
+                    if ped["pendente"] > 0.001:
+                        if c6.button("✔️ Quitar tudo", key=f"pgto_quit_{pid}", use_container_width=True):
+                            registrar_pagamento_pedido(pid, float(ped["total"]), df_validos_pgto, forma_sel)
+                            st.success(f"Pedido de {ped['cliente']} quitado ({forma_sel})!")
+                            st.rerun()
+
+            if cliente_filtro_pgto != "Todos":
+                if st.button(f"✅ Quitar TODOS os pedidos abertos de {cliente_filtro_pgto}", type="primary"):
+                    for _, ped in pedidos_abertos_pgto.iterrows():
+                        registrar_pagamento_pedido(ped["pedido_id"], float(ped["total"]), df_validos_pgto)
+                    st.success(f"Todos os pedidos de {cliente_filtro_pgto} foram quitados!")
+                    st.rerun()
+
 
 # ============================================================
 # TELA: GERAR COBRANÇA (WhatsApp) - pendências de todos os dias
