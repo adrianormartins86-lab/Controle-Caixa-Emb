@@ -339,6 +339,71 @@ def ux_mobile():
     )
 
 
+def destacar_menu_colapsado():
+    """Mostra um rótulo "MENU" ao lado da setinha que abre a barra lateral
+    quando ela está fechada (comum no celular, onde a sidebar começa
+    colapsada). O botão é interno do Streamlit e sua posição na tela varia
+    (o container dele ocupa a altura toda da coluna da sidebar e centraliza
+    o botão nela) — por isso usamos JS pra ler a posição real do botão em
+    vez de tentar "grudar" nele só com CSS.
+    """
+    components.html(
+        f"""
+        <script>
+        const win = window.parent;
+        const doc = win.document;
+
+        function posicionar() {{
+            const barra = doc.querySelector('[data-testid="stSidebar"]');
+            const fechada = barra && barra.getAttribute('aria-expanded') === 'false';
+            const btn = doc.querySelector('[data-testid="stSidebarCollapsedControl"] button');
+            let rotulo = doc.getElementById('rotulo-menu-emb');
+
+            if (!fechada || !btn) {{
+                if (rotulo) rotulo.style.display = 'none';
+                return;
+            }}
+            if (!rotulo) {{
+                rotulo = doc.createElement('div');
+                rotulo.id = 'rotulo-menu-emb';
+                rotulo.textContent = 'MENU';
+                Object.assign(rotulo.style, {{
+                    position: 'fixed',
+                    zIndex: '999999',
+                    background: '{AZUL_ESCURO}',
+                    color: '#FFFFFF',
+                    fontFamily: 'inherit',
+                    fontSize: '0.72rem',
+                    fontWeight: '800',
+                    letterSpacing: '0.5px',
+                    padding: '3px 10px',
+                    borderRadius: '6px',
+                    whiteSpace: 'nowrap',
+                    pointerEvents: 'none',
+                    boxShadow: '0 2px 6px rgba(0, 0, 0, 0.25)',
+                }});
+                doc.body.appendChild(rotulo);
+            }}
+
+            const r = btn.getBoundingClientRect();
+            rotulo.style.display = 'block';
+            rotulo.style.top = (r.top + r.height / 2 - rotulo.offsetHeight / 2) + 'px';
+            rotulo.style.left = (r.right + 6) + 'px';
+        }}
+
+        posicionar();
+        if (!doc.body.dataset.rotuloMenu) {{
+            setInterval(posicionar, 300);
+            win.addEventListener('resize', posicionar);
+            win.addEventListener('scroll', posicionar, true);
+            doc.body.dataset.rotuloMenu = '1';
+        }}
+        </script>
+        """,
+        height=0,
+    )
+
+
 def rolar_tela(alvo: str = "topo"):
     """Rola a tela depois de um rerun. alvo: 'topo' ou um seletor CSS."""
     if alvo == "topo":
@@ -772,6 +837,7 @@ with st.sidebar:
 # vale para todas as telas: nenhum campo de data aceita digitação
 bloquear_teclado()
 ux_mobile()
+destacar_menu_colapsado()
 
 # ============================================================
 # TELA: CADASTROS (Produtos, Missões, Clientes)
