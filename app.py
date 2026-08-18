@@ -812,6 +812,89 @@ def gerar_pdf_fechamento(periodo_txt, por_forma, total_receb, por_produto,
     return buf.getvalue()
 
 
+def gerar_pdf_resumo_produto(periodo_txt, total_geral, recebido, a_receber_total, linhas, mostra_produto):
+    """PDF do Resumo por Produto: cabeçalho + totais + tabela única.
+
+    Como é só uma tabela (sem o layout em 2 colunas do Fechamento), um
+    SimpleDocTemplate normal já basta — o Platypus quebra a tabela sozinho
+    entre páginas quando ela não cabe mais, sem precisar de Frames manuais.
+    """
+    from io import BytesIO
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.units import mm
+    from reportlab.lib import colors
+    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Image as RLImage
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+
+    AZUL_RL = colors.HexColor("#0B3D91")
+    AZUL_CLARO_RL = colors.HexColor("#EEF3FB")
+
+    def moeda(v):
+        return f"R$ {v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+    buf = BytesIO()
+    margem = 14 * mm
+    doc = SimpleDocTemplate(
+        buf, pagesize=A4,
+        leftMargin=margem, rightMargin=margem, topMargin=margem, bottomMargin=margem,
+    )
+
+    styles = getSampleStyleSheet()
+    titulo = ParagraphStyle("titulo", parent=styles["Title"], textColor=AZUL_RL, fontSize=16)
+    sub = ParagraphStyle("sub", parent=styles["Normal"], textColor=colors.grey, fontSize=9)
+    totais_style = ParagraphStyle(
+        "totais", parent=styles["Normal"], textColor=AZUL_RL, fontSize=11, spaceBefore=6, spaceAfter=8
+    )
+
+    story = []
+    if TEM_LOGO:
+        try:
+            cab = Table([[RLImage(LOGO, width=16 * mm, height=16 * mm),
+                          Paragraph("Resumo por Produto", titulo)]],
+                        colWidths=[20 * mm, None])
+            cab.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE")]))
+            story.append(cab)
+        except Exception:
+            story.append(Paragraph("Resumo por Produto", titulo))
+    else:
+        story.append(Paragraph("Resumo por Produto", titulo))
+
+    story.append(Paragraph(periodo_txt, sub))
+    story.append(Paragraph(
+        f"Total geral: <b>{moeda(total_geral)}</b> &nbsp;&nbsp;|&nbsp;&nbsp; "
+        f"Recebido: <b>{moeda(recebido)}</b> &nbsp;&nbsp;|&nbsp;&nbsp; "
+        f"A receber: <b>{moeda(a_receber_total)}</b>",
+        totais_style,
+    ))
+
+    if mostra_produto:
+        cabecalho = ["Data", "Cliente", "Produto", "Qtde", "Valor", "Situação"]
+        larguras = [20 * mm, 42 * mm, 42 * mm, 14 * mm, 24 * mm, 25 * mm]
+        col_num_ini, col_num_fim = 3, 4
+    else:
+        cabecalho = ["Data", "Cliente", "Qtde", "Valor", "Situação"]
+        larguras = [24 * mm, 62 * mm, 16 * mm, 28 * mm, 28 * mm]
+        col_num_ini, col_num_fim = 2, 3
+
+    tabela = Table([cabecalho] + linhas, colWidths=larguras, repeatRows=1)
+    tabela.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), AZUL_RL),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 8),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, AZUL_CLARO_RL]),
+        ("ALIGN", (col_num_ini, 0), (col_num_fim, -1), "RIGHT"),
+        ("GRID", (0, 0), (-1, -1), 0.4, colors.lightgrey),
+        ("TOPPADDING", (0, 0), (-1, -1), 2.5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 2.5),
+    ]))
+    story.append(tabela)
+
+    doc.build(story)
+    buf.seek(0)
+    return buf.getvalue()
+
+
 # ------------------------------------------------------------
 # Navegação (menu conforme o perfil)
 # ------------------------------------------------------------
@@ -2298,8 +2381,10 @@ elif pagina == "📦 Resumo por Produto":
             colunas_tabela.append("produto")
         colunas_tabela += ["quantidade", "total", "situacao"]
 
+        df_prod_ordenado = df_prod.sort_values(["data_lancamento", "cliente"], ascending=[False, True])
+
         st.dataframe(
-            df_prod.sort_values(["data_lancamento", "cliente"], ascending=[False, True])[colunas_tabela],
+            df_prod_ordenado[colunas_tabela],
             hide_index=True,
             use_container_width=True,
             column_config={
@@ -2311,6 +2396,38 @@ elif pagina == "📦 Resumo por Produto":
                 "situacao": st.column_config.TextColumn("Situação"),
             },
         )
+
+        # --- exportar em PDF (fica logo abaixo do filtro de Produto) ---
+        with col_produto_resumo:
+            mostra_produto_pdf = produto_filtro_resumo == "Todos"
+            linhas_pdf = []
+            for _, r in df_prod_ordenado.iterrows():
+                situacao_pdf = r["situacao"].split(" ", 1)[-1]  # tira o emoji, deixa só o texto
+                if mostra_produto_pdf:
+                    linhas_pdf.append([r["data_fmt"], r["cliente"], r["produto"],
+                                        str(int(r["quantidade"])), fmt_moeda(r["total"]), situacao_pdf])
+                else:
+                    linhas_pdf.append([r["data_fmt"], r["cliente"],
+                                        str(int(r["quantidade"])), fmt_moeda(r["total"]), situacao_pdf])
+
+            try:
+                pdf_bytes_prod = gerar_pdf_resumo_produto(
+                    legenda_prod + ".",
+                    df_prod["total"].sum(), df_prod["valor_pago"].sum(), df_prod["pendente"].sum(),
+                    linhas_pdf, mostra_produto_pdf,
+                )
+                nome_prod_arq = (
+                    produto_filtro_resumo.lower().replace(" ", "_") if produto_filtro_resumo != "Todos" else "todos"
+                )
+                st.download_button(
+                    "📄 Exportar em PDF",
+                    data=pdf_bytes_prod,
+                    file_name=f"resumo_produto_{nome_prod_arq}_{hoje_br().strftime('%d-%m-%Y')}.pdf",
+                    mime="application/pdf",
+                    use_container_width=True,
+                )
+            except Exception as e:
+                st.caption(f"Não foi possível gerar o PDF agora ({e}).")
 
 # ============================================================
 # TELA: PAGAMENTOS PENDENTES (receber / ajustar) — só administrador
