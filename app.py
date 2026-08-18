@@ -818,9 +818,9 @@ def gerar_pdf_fechamento(periodo_txt, por_forma, total_receb, por_produto,
 # todos veem "Configurações", mas dentro dela só o cadastro de clientes
 # fica liberado para o perfil operador.
 MENU_USUARIO = ["🧾 Lançamento", "📋 Extrato", "⚙️ Configurações", "📲 Instalar App"]
-MENU_ADMIN = ["🧾 Lançamento", "📋 Extrato", "📊 Resumo por cliente", "📑 Fechamento",
-              "💰 Pgtos. Pendentes", "🔄 Abatimento/Reembolso", "📱 Gerar Cobrança", "⚙️ Configurações",
-              "📲 Instalar App"]
+MENU_ADMIN = ["🧾 Lançamento", "📋 Extrato", "📊 Resumo por cliente", "📦 Resumo por Produto",
+              "📑 Fechamento", "💰 Pgtos. Pendentes", "🔄 Abatimento/Reembolso", "📱 Gerar Cobrança",
+              "⚙️ Configurações", "📲 Instalar App"]
 
 with st.sidebar:
     st.caption(f"👤 Conectado como **{USUARIO}**")
@@ -2209,6 +2209,106 @@ elif pagina == "📊 Resumo por cliente":
                 "valor_pago": st.column_config.NumberColumn("Pago (R$)", format="R$ %.2f"),
                 "abatido": st.column_config.NumberColumn("Abatido (R$)", format="R$ %.2f"),
                 "pendente": st.column_config.NumberColumn("Devendo (R$)", format="R$ %.2f"),
+            },
+        )
+
+# ============================================================
+# TELA: RESUMO POR PRODUTO
+# ============================================================
+elif pagina == "📦 Resumo por Produto":
+    st.markdown("### 📦 Resumo por Produto")
+
+    df_prod_todos_resumo = carregar_produtos(somente_ativos=False)
+    produtos_cadastrados_resumo = (
+        df_prod_todos_resumo["nome"].tolist() if not df_prod_todos_resumo.empty else []
+    )
+    produtos_historico_resumo = sorted({
+        d["produto"] for d in sb.table("lancamentos").select("produto").eq("excluido", False).execute().data
+    })
+    lista_produtos_resumo = ["Todos"] + sorted(set(produtos_cadastrados_resumo + produtos_historico_resumo))
+
+    col_modo_prod, col_produto_resumo = st.columns([3, 1.3])
+    with col_modo_prod:
+        modo_data_prod = st.radio(
+            "Filtrar por", ["Todos os períodos", "Período", "Dia único"],
+            horizontal=True, key="prod_modo_data",
+        )
+    with col_produto_resumo:
+        produto_filtro_resumo = st.selectbox("Produto", lista_produtos_resumo, key="prod_produto")
+
+    if modo_data_prod == "Todos os períodos":
+        data_ini_prod = data_fim_prod = None
+        legenda_prod = "Considera todos os lançamentos, de todos os períodos"
+    elif modo_data_prod == "Dia único":
+        dia_prod = st.date_input("Dia", value=hoje_br(), format="DD/MM/YYYY", key="prod_dia")
+        data_ini_prod = data_fim_prod = dia_prod
+        legenda_prod = f"Lançamentos de {dia_prod.strftime('%d/%m/%Y')}"
+    else:
+        pc1, pc2 = st.columns(2)
+        with pc1:
+            data_ini_prod = st.date_input(
+                "De", value=hoje_br() - timedelta(days=30), format="DD/MM/YYYY", key="prod_de"
+            )
+        with pc2:
+            data_fim_prod = st.date_input(
+                "Até", value=hoje_br(), format="DD/MM/YYYY", key="prod_ate"
+            )
+        legenda_prod = (
+            f"Lançamentos de {data_ini_prod.strftime('%d/%m/%Y')} "
+            f"a {data_fim_prod.strftime('%d/%m/%Y')}"
+        )
+    if produto_filtro_resumo != "Todos":
+        legenda_prod += f"  •  Produto: {produto_filtro_resumo}"
+    st.caption(legenda_prod + ".")
+
+    if data_ini_prod is None:
+        dados_all_prod = sb.table("lancamentos").select("*").eq("excluido", False).execute().data
+        df_prod = pd.DataFrame(dados_all_prod)
+    else:
+        df_prod = carregar_lancamentos(data_ini_prod, data_fim_prod, "Todos", "Todos", "Todos", False)
+
+    if produto_filtro_resumo != "Todos" and not df_prod.empty:
+        df_prod = df_prod.loc[df_prod["produto"] == produto_filtro_resumo]
+
+    if df_prod.empty:
+        st.info("Nenhum lançamento encontrado com esses filtros.")
+    else:
+        if "valor_pago" not in df_prod.columns:
+            df_prod["valor_pago"] = 0.0
+        df_prod["valor_pago"] = df_prod["valor_pago"].fillna(0.0)
+        df_prod["pendente"] = (df_prod["total"] - df_prod["valor_pago"]).round(2).clip(lower=0)
+
+        def situacao_linha_prod(row):
+            if row["pendente"] <= 0.001:
+                return "✅ Pago"
+            if row["valor_pago"] > 0.001:
+                return "💸 Parcial"
+            return "⏳ Pendente"
+
+        df_prod["situacao"] = df_prod.apply(situacao_linha_prod, axis=1)
+        df_prod["data_fmt"] = pd.to_datetime(df_prod["data_lancamento"]).dt.strftime("%d/%m/%Y")
+
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Total geral", fmt_moeda(df_prod["total"].sum()))
+        m2.metric("Recebido", fmt_moeda(df_prod["valor_pago"].sum()))
+        m3.metric("⏳ A receber", fmt_moeda(df_prod["pendente"].sum()))
+
+        colunas_tabela = ["data_fmt", "cliente"]
+        if produto_filtro_resumo == "Todos":
+            colunas_tabela.append("produto")
+        colunas_tabela += ["quantidade", "total", "situacao"]
+
+        st.dataframe(
+            df_prod.sort_values(["data_lancamento", "cliente"], ascending=[False, True])[colunas_tabela],
+            hide_index=True,
+            use_container_width=True,
+            column_config={
+                "data_fmt": st.column_config.TextColumn("Data"),
+                "cliente": st.column_config.TextColumn("Cliente"),
+                "produto": st.column_config.TextColumn("Produto"),
+                "quantidade": st.column_config.NumberColumn("Qtde", format="%d"),
+                "total": st.column_config.NumberColumn("Valor (R$)", format="R$ %.2f"),
+                "situacao": st.column_config.TextColumn("Situação"),
             },
         )
 
