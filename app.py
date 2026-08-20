@@ -2836,6 +2836,12 @@ elif pagina == "📦 Resumo por Produto":
 elif pagina == "💰 Pgtos. Pendentes":
     st.markdown("### 💰 Pagamentos Pendentes")
 
+    # a mensagem de sucesso precisa sobreviver ao st.rerun() do botão Salvar
+    # (senão o rerun apaga o st.success antes da tela redesenhar e dá a
+    # impressão de que nada aconteceu — daí a equipe clicar várias vezes)
+    if st.session_state.get("flash_pgtos"):
+        st.success(st.session_state.pop("flash_pgtos"))
+
     df_ev_todos_pgto = carregar_eventos(somente_ativos=False)
     lista_missao_pgto = ["Todos"] + (
         df_ev_todos_pgto["nome"].tolist() if not df_ev_todos_pgto.empty else []
@@ -2965,17 +2971,20 @@ elif pagina == "💰 Pgtos. Pendentes":
                     if c6.button("💾 Salvar", key=f"pgto_save_{pid}", use_container_width=True):
                         registrar_pagamento_pedido(pid, novo_valor, df_validos_pgto, forma_sel)
                         if novo_valor >= ped["total"] - 0.001:
-                            st.success(f"Pedido de {ped['cliente']} quitado ({forma_sel})!")
+                            st.session_state["flash_pgtos"] = f"Pedido de {ped['cliente']} quitado ({forma_sel})! ✅"
                         else:
                             falta = ped["total"] - novo_valor
-                            st.success(f"Registrado R$ {novo_valor:.2f} de {ped['cliente']} ({forma_sel}) — resta R$ {falta:.2f}.")
+                            st.session_state["flash_pgtos"] = (
+                                f"Registrado R$ {novo_valor:.2f} de {ped['cliente']} ({forma_sel}) "
+                                f"— resta R$ {falta:.2f}. ✅"
+                            )
                         st.rerun()
 
             if cliente_filtro_pgto != "Todos":
                 if st.button(f"✅ Quitar TODOS os pedidos abertos de {cliente_filtro_pgto}", type="primary"):
                     for _, ped in pedidos_abertos_pgto.iterrows():
                         registrar_pagamento_pedido(ped["pedido_id"], float(ped["total"]), df_validos_pgto)
-                    st.success(f"Todos os pedidos de {cliente_filtro_pgto} foram quitados!")
+                    st.session_state["flash_pgtos"] = f"Todos os pedidos de {cliente_filtro_pgto} foram quitados! ✅"
                     st.rerun()
 
 
