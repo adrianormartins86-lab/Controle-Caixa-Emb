@@ -604,6 +604,9 @@ def carregar_lancamentos(
         .gte("data_lancamento", data_ini.isoformat())
         .lte("data_lancamento", data_fim.isoformat())
         .order("criado_em", desc=True)
+        # comandas ainda abertas não entram em nenhum relatório —
+        # só aparecem depois de fechadas (ver "🧾 Comandas Abertas")
+        .eq("status", "fechada")
     )
     if not incluir_excluidos:
         q = q.eq("excluido", False)
@@ -621,6 +624,157 @@ def clientes_existentes_no_historico() -> list[str]:
     # Busca clientes que já existem na tabela de lançamentos para não perder o histórico
     dados = sb.table("lancamentos").select("cliente").eq("excluido", False).execute().data
     return sorted({d["cliente"] for d in dados})
+
+# ------------------------------------------------------------
+# Comandas abertas — cliente fica "com a conta aberta" na lanchonete,
+# vai pedindo mais coisa ao longo do dia, e só decide forma de
+# pagamento quando for embora. Enquanto status="aberta", a linha
+# não aparece em nenhum relatório (carregar_lancamentos já filtra).
+# ------------------------------------------------------------
+def buscar_comanda_aberta(cliente: str) -> dict | None:
+    """Comanda aberta (não fechada) de um cliente, se existir."""
+    if not cliente:
+        return None
+    dados = (
+        sb.table("lancamentos")
+        .select("*")
+        .eq("cliente", cliente)
+        .eq("status", "aberta")
+        .eq("excluido", False)
+        .order("id")
+        .execute()
+        .data
+    )
+    if not dados:
+        return None
+    total = sum(float(d["quantidade"]) * float(d["preco_unitario"]) for d in dados)
+    return {
+        "pedido_id": dados[0]["pedido_id"],
+        "evento": dados[0]["evento"],
+        "data_lancamento": dados[0]["data_lancamento"],
+        "itens": dados,
+        "total": round(total, 2),
+    }
+
+def carregar_comandas_abertas() -> pd.DataFrame:
+    """Uma linha por comanda aberta (agrupada por pedido_id), pra tela
+    '🧾 Comandas Abertas'."""
+    dados = (
+        sb.table("lancamentos")
+        .select("*")
+        .eq("status", "aberta")
+        .eq("excluido", False)
+        .order("id")
+        .execute()
+        .data
+    )
+    if not dados:
+        return pd.DataFrame()
+    df = pd.DataFrame(dados)
+    df["total_item"] = df["quantidade"].astype(float) * df["preco_unitario"].astype(float)
+
+    linhas = []
+    for pid, sub in df.groupby("pedido_id"):
+        itens_txt = ", ".join(
+            f"{int(q)}x {p}" for p, q in sub.groupby("produto")["quantidade"].sum().items()
+        )
+        linhas.append({
+            "pedido_id": pid,
+            "cliente": sub["cliente"].iloc[0],
+            "evento": sub["evento"].iloc[0],
+            "data_lancamento": sub["data_lancamento"].iloc[0],
+            "aberta_desde": sub["criado_em"].min() if "criado_em" in sub.columns else "",
+            "itens": itens_txt,
+            "n_itens": int(sub["quantidade"].sum()),
+            "total": round(sub["total_item"].sum(), 2),
+        })
+    return pd.DataFrame(linhas).sort_values("aberta_desde")
+
+def inserir_itens_comanda(pedido_id: str, cliente: str, evento: str,
+                           data_lancamento: str, observacao: str | None,
+                           itens_carrinho: list[dict]) -> None:
+    """Grava os itens do carrinho local como linhas 'aberta' da comanda
+    (nova ou já existente) — sem decidir pagamento ainda."""
+    linhas = [
+        {
+            "pedido_id": pedido_id,
+            "cliente": cliente,
+            "evento": evento,
+            "produto": it["produto"],
+            "quantidade": it["quantidade"],
+            "preco_unitario": it["preco_unitario"] + it.get("preco_extra", 0.0),
+            "obs_item": it.get("obs_item") or None,
+            "observacao": observacao or None,
+            "data_lancamento": data_lancamento,
+            "status": "aberta",
+            "pago": False,
+            "valor_pago": 0.0,
+            "forma_pagamento": None,
+            "data_pagamento": None,
+            "lancado_por": USUARIO,
+        }
+        for it in itens_carrinho
+    ]
+    sb.table("lancamentos").insert(linhas).execute()
+
+def calcular_valor_pago_por_item(totais: list[float], situacao: str,
+                                  valor_pago_input: float) -> list[float]:
+    """Distribui o valor pago entre as linhas de um pedido, proporcional ao
+    total de cada uma, pra o somatório bater certo."""
+    if situacao == "✅ Pago":
+        return [round(t, 2) for t in totais]
+    if situacao == "💸 Parcial":
+        restante = round(valor_pago_input, 2)
+        valores = []
+        for idx, t in enumerate(totais):
+            if idx == len(totais) - 1:
+                valores.append(round(restante, 2))
+            else:
+                parcela = round(min(t, restante), 2)
+                valores.append(parcela)
+                restante = round(restante - parcela, 2)
+        return valores
+    return [0.0 for _ in totais]  # Pendente
+
+def fechar_comanda(pedido_id: str, itens: list[dict], situacao: str,
+                    valor_pago_input: float, forma_pgto: str | None,
+                    data_pagamento: date, observacao: str | None = None) -> None:
+    """Fecha uma comanda: decide pago/valor_pago/forma pra cada linha já
+    gravada e muda status pra 'fechada' — só a partir daí ela entra no
+    Extrato e nos outros relatórios."""
+    itens = sorted(itens, key=lambda it: it["id"])
+    totais = [float(it["quantidade"]) * float(it["preco_unitario"]) for it in itens]
+    valor_pago_por_item = calcular_valor_pago_por_item(totais, situacao, valor_pago_input)
+    esta_pago = situacao == "✅ Pago"
+    # Como a comanda pode ter itens de rodadas diferentes, cada linha pode ter
+    # guardado uma observação diferente (ou nenhuma). Ao fechar, uma nota nova
+    # digitada agora tem prioridade; se não digitaram nada nesta rodada,
+    # reaproveita a última nota já registrada em alguma linha da comanda — pra
+    # não perder ("pagar na sexta...") só porque a rodada final ficou em branco.
+    observacao_final = observacao.strip() if observacao and observacao.strip() else next(
+        (it.get("observacao") for it in itens if it.get("observacao")), None
+    )
+    for it, valor_pago in zip(itens, valor_pago_por_item):
+        update = {
+            "status": "fechada",
+            "pago": esta_pago,
+            "valor_pago": valor_pago,
+            "forma_pagamento": forma_pgto if situacao in ("✅ Pago", "💸 Parcial") else None,
+            "data_pagamento": data_pagamento.isoformat() if esta_pago else None,
+            "observacao": observacao_final,
+            "alterado_por": USUARIO,
+            "alterado_em": AGORA(),
+        }
+        sb.table("lancamentos").update(update).eq("id", int(it["id"])).execute()
+
+def cancelar_comanda(pedido_id: str) -> None:
+    """Cancela uma comanda aberta inteira (ainda não virou lançamento de
+    verdade — pode apagar direto, sem passar por 'excluido')."""
+    sb.table("lancamentos").delete().eq("pedido_id", pedido_id).eq("status", "aberta").execute()
+
+def remover_item_comanda(item_id: int) -> None:
+    """Remove um item específico de uma comanda ainda aberta."""
+    sb.table("lancamentos").delete().eq("id", item_id).eq("status", "aberta").execute()
 
 def carregar_abatimentos(somente_ativos: bool = True) -> pd.DataFrame:
     """Abatimentos/reembolsos: crédito lançado direto pro cliente (não é forma
@@ -900,8 +1054,8 @@ def gerar_pdf_resumo_produto(periodo_txt, total_geral, recebido, a_receber_total
 # ------------------------------------------------------------
 # todos veem "Configurações", mas dentro dela só o cadastro de clientes
 # fica liberado para o perfil operador.
-MENU_USUARIO = ["🧾 Lançamento", "📋 Extrato", "⚙️ Configurações", "📲 Instalar App"]
-MENU_ADMIN = ["🧾 Lançamento", "📋 Extrato", "📊 Resumo por cliente", "📦 Resumo por Produto",
+MENU_USUARIO = ["🧾 Lançamento", "🗂️ Comandas Abertas", "📋 Extrato", "⚙️ Configurações", "📲 Instalar App"]
+MENU_ADMIN = ["🧾 Lançamento", "🗂️ Comandas Abertas", "📋 Extrato", "📊 Resumo por cliente", "📦 Resumo por Produto",
               "📑 Fechamento", "💰 Pgtos. Pendentes", "🔄 Abatimento/Reembolso", "📱 Gerar Cobrança",
               "⚙️ Configurações", "📲 Instalar App"]
 
@@ -912,6 +1066,7 @@ with st.sidebar:
         "Menu",
         MENU_ADMIN if EH_ADMIN else MENU_USUARIO,
         label_visibility="collapsed",
+        key="menu_radio",
     )
     st.divider()
     if st.button("Sair", use_container_width=True):
@@ -1317,12 +1472,14 @@ elif pagina == "🧾 Lançamento":
         st.stop()
     lista_clientes = df_clientes["nome"].tolist()
 
-    # Data primeiro: é o campo que a equipe confere antes de tudo no celular
+    # se veio da tela "🗂️ Comandas Abertas" com um cliente pré-selecionado, usa ele
+    cliente_pre = st.session_state.pop("lancamento_cliente_pre", None)
+    if cliente_pre and cliente_pre in lista_clientes:
+        st.session_state[f"sel_cliente_{NP}"] = cliente_pre
+
+    # Cliente primeiro: dele depende se já existe comanda aberta (data/missão
+    # ficam travadas na comanda, então precisam saber isso antes de desenhar).
     col_b, col_ev, col_a = st.columns([1, 1.2, 2])
-    with col_b:
-        data_lanc = st.date_input("Data", value=hoje_br(), format="DD/MM/YYYY")
-    with col_ev:
-        missao_sel = st.selectbox("🎯 Missão", lista_missoes)
     with col_a:
         cliente_sel = st.selectbox(
             "Cliente",
@@ -1333,13 +1490,38 @@ elif pagina == "🧾 Lançamento":
             help="Escolha um cliente previamente cadastrado.",
         )
 
+    comanda_aberta = buscar_comanda_aberta(cliente_sel) if cliente_sel else None
+
+    with col_b:
+        if comanda_aberta:
+            data_lanc = datetime.strptime(comanda_aberta["data_lancamento"], "%Y-%m-%d").date()
+            st.date_input(
+                "Data", value=data_lanc, format="DD/MM/YYYY", disabled=True,
+                help="Comanda já aberta — a data é a do primeiro pedido dela.",
+            )
+        else:
+            data_lanc = st.date_input("Data", value=hoje_br(), format="DD/MM/YYYY")
+    with col_ev:
+        if comanda_aberta:
+            missao_sel = comanda_aberta["evento"]
+            st.text_input("🎯 Missão", value=missao_sel, disabled=True)
+        else:
+            missao_sel = st.selectbox("🎯 Missão", lista_missoes)
+
+    if comanda_aberta:
+        st.info(
+            f"🧾 **{cliente_sel}** já tem uma comanda aberta — "
+            f"{len(comanda_aberta['itens'])} item(ns), R$ {comanda_aberta['total']:.2f} até agora. "
+            "Os itens novos entram nela; use **Fechar comanda e pagar** quando ele for embora."
+        )
+
     # --- adicionar itens ao pedido ---
     st.markdown(
         "<hr class='regua-seccao'>"
         "<div class='titulo-seccao' id='sec-produto'>🛒 Adicionar produto</div>",
         unsafe_allow_html=True,
     )
-    
+
     # Qtde precisa de peso >= 1.1: abaixo disso o Streamlit esconde os botões - e +
     c1, c2, c3, c_extra, c4, c5 = st.columns([1.8, 1.15, 1.15, 1.15, 1.6, 1.15])
     with c1:
@@ -1409,45 +1591,75 @@ elif pagina == "🧾 Lançamento":
                 st.session_state["rolar"] = "#sec-itens"
                 st.rerun()
 
-    # --- carrinho ---
+    # --- carrinho (itens novos desta rodada) + itens já guardados na comanda ---
     carrinho = st.session_state["carrinho"]
-    if carrinho:
+    itens_existentes = comanda_aberta["itens"] if comanda_aberta else []
+
+    if carrinho or itens_existentes:
         st.markdown(
             "<hr class='regua-seccao'>"
             "<div class='titulo-seccao' id='sec-itens'>📦 Itens do pedido</div>",
             unsafe_allow_html=True,
         )
-        df_car = pd.DataFrame(carrinho)   # usado no total do pedido, mais abaixo
 
-        for i, item in enumerate(carrinho):
-            # duas colunas apenas: a linha completa + a lixeira.
-            # o CSS acima impede que elas empilhem no celular.
-            ic_linha, ic_lixo = st.columns([9, 1.2])
-
-            extra = (
-                f" <span class='li-uni'>(+{item['preco_extra']:.2f})</span>"
-                if item.get("preco_extra", 0) > 0
-                else ""
-            )
-            with ic_linha:
+        if itens_existentes:
+            st.markdown("**Já registrados nesta comanda:**")
+            for it in itens_existentes:
+                total_it = round(float(it["quantidade"]) * float(it["preco_unitario"]), 2)
                 st.markdown(
                     "<div class='linha-item'>"
-                    f"<span class='li-prod'>{escapar_html(item['produto'])}</span>"
-                    f"<span class='li-qtd'>x{item['quantidade']}</span>"
-                    f"<span class='li-uni'>R$ {item['preco_unitario']:.2f}{extra}</span>"
-                    f"<span class='li-tot'>R$ {item['total']:.2f}</span>"
+                    f"<span class='li-prod'>{escapar_html(it['produto'])}</span>"
+                    f"<span class='li-qtd'>x{it['quantidade']}</span>"
+                    f"<span class='li-uni'>R$ {float(it['preco_unitario']):.2f}</span>"
+                    f"<span class='li-tot'>R$ {total_it:.2f}</span>"
                     "</div>"
                     + (
-                        f"<div class='obs-item'>{escapar_html(item['obs_item'])}</div>"
-                        if item.get("obs_item")
+                        f"<div class='obs-item'>{escapar_html(it['obs_item'])}</div>"
+                        if it.get("obs_item")
                         else ""
                     ),
                     unsafe_allow_html=True,
                 )
-            with ic_lixo:
-                if st.button("🗑️", key=f"del_{i}", help="Remover este item"):
-                    carrinho.pop(i)
-                    st.rerun()
+            st.caption("Pra remover algum desses ou cancelar a comanda, use a tela **🗂️ Comandas Abertas**.")
+
+        if carrinho:
+            df_car = pd.DataFrame(carrinho)   # usado no total do pedido, mais abaixo
+            if itens_existentes:
+                st.markdown("**Novos itens desta rodada:**")
+
+            for i, item in enumerate(carrinho):
+                # duas colunas apenas: a linha completa + a lixeira.
+                # o CSS acima impede que elas empilhem no celular.
+                ic_linha, ic_lixo = st.columns([9, 1.2])
+
+                extra = (
+                    f" <span class='li-uni'>(+{item['preco_extra']:.2f})</span>"
+                    if item.get("preco_extra", 0) > 0
+                    else ""
+                )
+                with ic_linha:
+                    st.markdown(
+                        "<div class='linha-item'>"
+                        f"<span class='li-prod'>{escapar_html(item['produto'])}</span>"
+                        f"<span class='li-qtd'>x{item['quantidade']}</span>"
+                        f"<span class='li-uni'>R$ {item['preco_unitario']:.2f}{extra}</span>"
+                        f"<span class='li-tot'>R$ {item['total']:.2f}</span>"
+                        "</div>"
+                        + (
+                            f"<div class='obs-item'>{escapar_html(item['obs_item'])}</div>"
+                            if item.get("obs_item")
+                            else ""
+                        ),
+                        unsafe_allow_html=True,
+                    )
+                with ic_lixo:
+                    if st.button("🗑️", key=f"del_{i}", help="Remover este item"):
+                        carrinho.pop(i)
+                        st.rerun()
+
+            total_novo = round(df_car["total"].sum(), 2)
+        else:
+            total_novo = 0.0
 
         observacao = st.text_input(
             "Observação do pedido (opcional)",
@@ -1455,14 +1667,17 @@ elif pagina == "🧾 Lançamento":
             key=f"inp_obs_pedido_{NP}",
         )
 
-        total_pedido = df_car["total"].sum()
-        st.markdown(f"#### 💰 Total do pedido: R$ {total_pedido:.2f}")
+        total_existente = comanda_aberta["total"] if comanda_aberta else 0.0
+        total_pedido = round(total_existente + total_novo, 2)
+        rotulo_total = "da comanda" if comanda_aberta else "do pedido"
+        st.markdown(f"#### 💰 Total {rotulo_total}: R$ {total_pedido:.2f}")
 
         situacao = st.radio(
             "Situação do pagamento",
             ["✅ Pago", "⏳ Pendente", "💸 Parcial"],
             horizontal=True,
-            help="Parcial: cliente pagou só uma parte agora; o restante fica como pendente no extrato.",
+            help="Parcial: cliente pagou só uma parte agora; o restante fica como pendente no extrato. "
+                 "Só é usada quando a comanda é fechada — enquanto fica aberta, ninguém precisa decidir isso.",
             key=f"rad_situacao_{NP}",
         )
 
@@ -1476,7 +1691,7 @@ elif pagina == "🧾 Lançamento":
                 value=0.0,
                 step=0.50,
                 format="%.2f",
-                help=f"Total do pedido: R$ {total_pedido:.2f}. O que faltar vira pendente.",
+                help=f"Total: R$ {total_pedido:.2f}. O que faltar vira pendente.",
                 key=f"inp_parcial_{NP}",
             )
             falta = total_pedido - valor_pago_input
@@ -1489,11 +1704,11 @@ elif pagina == "🧾 Lançamento":
                 "Forma de pagamento", FORMAS_PAGAMENTO, key=f"sel_forma_{NP}"
             )
 
-        @st.dialog("🧹 Limpar itens do pedido?")
+        @st.dialog("🧹 Limpar itens novos deste pedido?")
         def confirmar_limpar_itens():
             st.write(
-                f"Isso vai remover **{len(carrinho)} item(ns)** já adicionados a este "
-                "pedido. Essa ação não pode ser desfeita."
+                f"Isso vai remover **{len(carrinho)} item(ns)** desta rodada, ainda não "
+                "guardados. Essa ação não pode ser desfeita."
             )
             cc1, cc2 = st.columns(2)
             with cc1:
@@ -1505,76 +1720,243 @@ elif pagina == "🧾 Lançamento":
                 if st.button("Cancelar", use_container_width=True):
                     st.rerun()
 
-        col_s1, col_s2 = st.columns([1, 3])
+        col_s1, col_s2, col_s3 = st.columns([1.4, 1.6, 1.1])
         with col_s1:
-            if st.button("✅ Salvar lançamento", type="primary", use_container_width=True):
+            if st.button(
+                "🧾 Guardar na comanda", use_container_width=True, disabled=not carrinho,
+                help="Grava os itens novos e deixa a comanda aberta pra ele pedir mais depois.",
+            ):
                 if not cliente_sel:
                     st.error("Selecione um cliente antes de salvar.")
-                elif situacao == "💸 Parcial" and valor_pago_input <= 0:
-                    st.error("Informe o valor pago (maior que zero) ou escolha Pendente.")
                 else:
-                    pedido_id = uuid.uuid4().hex[:8]
-                    esta_pago = situacao == "✅ Pago"
-                    # Bonificação: pedido cortesia, marca como pago sem gerar cobrança
-                    eh_bonificacao = forma_pgto == "Bonificação"
-
-                    # Distribui o valor pago do pedido entre as linhas (itens),
-                    # proporcional ao total de cada item, para o somatório bater certo.
-                    if esta_pago:
-                        valor_pago_por_item = [it["total"] for it in carrinho]
-                    elif situacao == "💸 Parcial":
-                        restante = round(valor_pago_input, 2)
-                        valor_pago_por_item = []
-                        for idx, it in enumerate(carrinho):
-                            if idx == len(carrinho) - 1:
-                                # última linha recebe o que sobrou (evita erro de arredondamento)
-                                valor_pago_por_item.append(round(restante, 2))
-                            else:
-                                parcela = min(it["total"], restante)
-                                valor_pago_por_item.append(round(parcela, 2))
-                                restante = round(restante - parcela, 2)
-                    else:  # Pendente
-                        valor_pago_por_item = [0.0 for _ in carrinho]
-
-                    linhas = [
-                        {
-                            "pedido_id": pedido_id,
-                            "cliente": cliente_sel.strip().title(),
-                            "evento": missao_sel,
-                            "produto": it["produto"],
-                            "quantidade": it["quantidade"],
-                            # Soma o unitário + extra antes de mandar para o banco de dados
-                            "preco_unitario": it["preco_unitario"] + it.get("preco_extra", 0.0),
-                            "obs_item": it.get("obs_item") or None,
-                            "observacao": observacao.strip() or None,
-                            "data_lancamento": data_lanc.isoformat(),
-                            "pago": esta_pago,
-                            "valor_pago": valor_pago_por_item[idx],
-                            "forma_pagamento": forma_pgto if situacao in ("✅ Pago", "💸 Parcial") else None,
-                            "data_pagamento": data_lanc.isoformat() if esta_pago else None,
-                            "lancado_por": USUARIO,
-                        }
-                        for idx, it in enumerate(carrinho)
-                    ]
+                    pedido_id = comanda_aberta["pedido_id"] if comanda_aberta else uuid.uuid4().hex[:8]
+                    data_para_gravar = (
+                        comanda_aberta["data_lancamento"] if comanda_aberta else data_lanc.isoformat()
+                    )
                     try:
-                        sb.table("lancamentos").insert(linhas).execute()
-                        # volta a tela ao inicio: sem cliente, sem produto, sem itens
+                        inserir_itens_comanda(
+                            pedido_id, cliente_sel.strip().title(), missao_sel,
+                            data_para_gravar, observacao.strip() or None, carrinho,
+                        )
                         st.session_state["carrinho"] = []
-                        st.session_state["n_pedido"] += 1
                         st.session_state["n_item"] += 1
                         st.session_state["rolar"] = "topo"
                         st.session_state["flash"] = (
-                            f"Lançamento salvo para **{cliente_sel.strip().title()}** "
-                            f"— R$ {total_pedido:.2f}. 🎉"
+                            f"Itens guardados na comanda de **{cliente_sel.strip().title()}** "
+                            "— continua aberta. 🧾"
                         )
                         st.rerun()
                     except Exception as e:
                         st.error(f"Erro ao salvar: {e}")
         with col_s2:
-            if st.button("🧹 Limpar itens"):
-                confirmar_limpar_itens()
+            if st.button("🔒 Fechar comanda e pagar", type="primary", use_container_width=True):
+                if not cliente_sel:
+                    st.error("Selecione um cliente antes de salvar.")
+                elif situacao == "💸 Parcial" and valor_pago_input <= 0:
+                    st.error("Informe o valor pago (maior que zero) ou escolha Pendente.")
+                else:
+                    cliente_final = cliente_sel.strip().title()
+                    pedido_id = comanda_aberta["pedido_id"] if comanda_aberta else uuid.uuid4().hex[:8]
+                    data_para_gravar = (
+                        comanda_aberta["data_lancamento"] if comanda_aberta else data_lanc.isoformat()
+                    )
+                    try:
+                        if carrinho:
+                            inserir_itens_comanda(
+                                pedido_id, cliente_final, missao_sel,
+                                data_para_gravar, observacao.strip() or None, carrinho,
+                            )
+                        comanda_para_fechar = buscar_comanda_aberta(cliente_final)
+                        if not comanda_para_fechar:
+                            st.error("Não encontrei os itens dessa comanda pra fechar. Tenta de novo.")
+                        else:
+                            fechar_comanda(
+                                comanda_para_fechar["pedido_id"], comanda_para_fechar["itens"],
+                                situacao, valor_pago_input, forma_pgto, hoje_br(),
+                                observacao=observacao.strip() or None,
+                            )
+                            st.session_state["carrinho"] = []
+                            st.session_state["n_pedido"] += 1
+                            st.session_state["n_item"] += 1
+                            st.session_state["rolar"] = "topo"
+                            st.session_state["flash"] = (
+                                f"Comanda de **{cliente_final}** fechada — R$ {total_pedido:.2f}. 🎉"
+                            )
+                            st.rerun()
+                    except Exception as e:
+                        st.error(f"Erro ao salvar: {e}")
+        with col_s3:
+            if carrinho:
+                if st.button("🧹 Limpar novos", use_container_width=True):
+                    confirmar_limpar_itens()
     else:
         st.info("Nenhum item adicionado ainda. Escolha um produto acima e clique em **Adicionar**.")
+
+
+elif pagina == "🗂️ Comandas Abertas":
+    st.markdown("### 🗂️ Comandas Abertas")
+    st.caption(
+        "Clientes que ainda estão na lanchonete e podem pedir mais alguma coisa. "
+        "Feche a comanda só quando ele for embora e não quiser mais nada."
+    )
+
+    if st.session_state.get("flash_comandas"):
+        st.success(st.session_state.pop("flash_comandas"))
+
+    df_comandas = carregar_comandas_abertas()
+    if df_comandas.empty:
+        st.info("Nenhuma comanda aberta no momento. 🎉")
+        st.stop()
+
+    for _, comanda in df_comandas.iterrows():
+        try:
+            aberta_dt = pd.to_datetime(comanda["aberta_desde"])
+            if aberta_dt.tzinfo is not None:
+                aberta_dt = aberta_dt.tz_convert(TZ)
+            aberta_txt = aberta_dt.strftime("%d/%m %H:%M")
+        except Exception:
+            aberta_txt = ""
+
+        with st.container(border=True):
+            cc1, cc2, cc3 = st.columns([2, 3.2, 1.4])
+            with cc1:
+                st.markdown(f"**{comanda['cliente']}**")
+                st.caption(f"{comanda['evento']}" + (f" — aberta às {aberta_txt}" if aberta_txt else ""))
+            with cc2:
+                st.markdown(comanda["itens"])
+                st.caption(f"{comanda['n_itens']} item(ns)")
+            with cc3:
+                st.markdown(f"**R$ {comanda['total']:.2f}**")
+
+            if EH_ADMIN:
+                with st.expander("Ver / corrigir itens"):
+                    comanda_itens = buscar_comanda_aberta(comanda["cliente"])
+                    itens_desta = (
+                        [it for it in comanda_itens["itens"] if it["pedido_id"] == comanda["pedido_id"]]
+                        if comanda_itens else []
+                    )
+                    for it in itens_desta:
+                        li1, li2 = st.columns([5, 1])
+                        with li1:
+                            tot_it = float(it["quantidade"]) * float(it["preco_unitario"])
+                            txt = f"{it['quantidade']}x {it['produto']} — R$ {tot_it:.2f}"
+                            if it.get("obs_item"):
+                                txt += f" ({it['obs_item']})"
+                            st.write(txt)
+                        with li2:
+                            if st.button("🗑️", key=f"rmitem_{it['id']}", help="Remover este item"):
+                                remover_item_comanda(int(it["id"]))
+                                st.rerun()
+
+            bc1, bc2, bc3 = st.columns([1.7, 1.7, 1.3])
+            with bc1:
+                if st.button("➕ Adicionar itens", key=f"add_{comanda['pedido_id']}", use_container_width=True):
+                    st.session_state["lancamento_cliente_pre"] = comanda["cliente"]
+                    st.session_state["menu_radio"] = "🧾 Lançamento"
+                    st.rerun()
+            with bc2:
+                if st.button(
+                    "🔒 Fechar comanda", key=f"fechar_{comanda['pedido_id']}",
+                    type="primary", use_container_width=True,
+                ):
+                    st.session_state["fechar_comanda_pid"] = comanda["pedido_id"]
+                    st.rerun()
+            with bc3:
+                if EH_ADMIN:
+                    if st.button("🗑️ Cancelar", key=f"cancelbtn_{comanda['pedido_id']}", use_container_width=True):
+                        st.session_state["cancelar_comanda_pid"] = comanda["pedido_id"]
+                        st.rerun()
+
+    # --- diálogo de fechamento (fora do loop, acionado por session_state) ---
+    pid_fechar = st.session_state.get("fechar_comanda_pid")
+    if pid_fechar:
+        linha = df_comandas.loc[df_comandas["pedido_id"] == pid_fechar]
+        if linha.empty:
+            st.session_state.pop("fechar_comanda_pid", None)
+        else:
+            comanda_sel = linha.iloc[0]
+
+            @st.dialog(f"🔒 Fechar comanda — {comanda_sel['cliente']}")
+            def fechar_comanda_dialog():
+                st.write(comanda_sel["itens"])
+                st.markdown(f"Total: **R$ {comanda_sel['total']:.2f}**")
+
+                situacao_fc = st.radio(
+                    "Situação do pagamento",
+                    ["✅ Pago", "⏳ Pendente", "💸 Parcial"],
+                    horizontal=True,
+                    key="rad_situacao_fechamento",
+                )
+                valor_pago_fc = 0.0
+                forma_fc = None
+                if situacao_fc == "💸 Parcial":
+                    valor_pago_fc = st.number_input(
+                        "Valor pago agora (R$)", min_value=0.0,
+                        max_value=float(comanda_sel["total"]), value=0.0, step=0.50,
+                        format="%.2f", key="inp_parcial_fechamento",
+                    )
+                    st.caption(f"Ficará **devendo R$ {comanda_sel['total'] - valor_pago_fc:.2f}**.")
+                if situacao_fc in ("✅ Pago", "💸 Parcial"):
+                    forma_fc = st.selectbox(
+                        "Forma de pagamento", FORMAS_PAGAMENTO, key="sel_forma_fechamento"
+                    )
+
+                dc1, dc2 = st.columns(2)
+                with dc1:
+                    if st.button("🔒 Confirmar fechamento", type="primary", use_container_width=True):
+                        if situacao_fc == "💸 Parcial" and valor_pago_fc <= 0:
+                            st.error("Informe o valor pago (maior que zero) ou escolha Pendente.")
+                        else:
+                            comanda_completa = buscar_comanda_aberta(comanda_sel["cliente"])
+                            if comanda_completa:
+                                fechar_comanda(
+                                    pid_fechar, comanda_completa["itens"], situacao_fc,
+                                    valor_pago_fc, forma_fc, hoje_br(),
+                                )
+                            st.session_state.pop("fechar_comanda_pid", None)
+                            st.session_state["flash_comandas"] = (
+                                f"Comanda de **{comanda_sel['cliente']}** fechada "
+                                f"— R$ {comanda_sel['total']:.2f}. 🎉"
+                            )
+                            st.rerun()
+                with dc2:
+                    if st.button("Cancelar", use_container_width=True):
+                        st.session_state.pop("fechar_comanda_pid", None)
+                        st.rerun()
+
+            fechar_comanda_dialog()
+
+    # --- diálogo de cancelamento (apaga a comanda inteira, ela nunca fechou) ---
+    pid_cancelar = st.session_state.get("cancelar_comanda_pid")
+    if pid_cancelar:
+        linha_c = df_comandas.loc[df_comandas["pedido_id"] == pid_cancelar]
+        if linha_c.empty:
+            st.session_state.pop("cancelar_comanda_pid", None)
+        else:
+            comanda_c = linha_c.iloc[0]
+
+            @st.dialog("🗑️ Cancelar comanda?")
+            def cancelar_comanda_dialog():
+                st.write(
+                    f"Isso vai apagar a comanda de **{comanda_c['cliente']}** "
+                    f"({comanda_c['itens']} — R$ {comanda_c['total']:.2f}) por inteiro. "
+                    "Como ela nunca chegou a fechar, não fica guardada em nenhum relatório — "
+                    "essa ação não pode ser desfeita."
+                )
+                xc1, xc2 = st.columns(2)
+                with xc1:
+                    if st.button("🗑️ Sim, cancelar", type="primary", use_container_width=True):
+                        cancelar_comanda(pid_cancelar)
+                        st.session_state.pop("cancelar_comanda_pid", None)
+                        st.session_state["flash_comandas"] = f"Comanda de **{comanda_c['cliente']}** cancelada."
+                        st.rerun()
+                with xc2:
+                    if st.button("Voltar", use_container_width=True):
+                        st.session_state.pop("cancelar_comanda_pid", None)
+                        st.rerun()
+
+            cancelar_comanda_dialog()
+
 
 # ============================================================
 # TELA: EXTRATO
@@ -2230,7 +2612,7 @@ elif pagina == "📊 Resumo por cliente":
     st.caption(legenda_resumo + ".")
 
     if data_ini_resumo is None:
-        dados_all = sb.table("lancamentos").select("*").eq("excluido", False).execute().data
+        dados_all = sb.table("lancamentos").select("*").eq("excluido", False).eq("status", "fechada").execute().data
         df_all = pd.DataFrame(dados_all)
         if missao_filtro_resumo != "Todos" and not df_all.empty and "evento" in df_all.columns:
             df_all = df_all.loc[df_all["evento"] == missao_filtro_resumo]
@@ -2345,7 +2727,7 @@ elif pagina == "📦 Resumo por Produto":
     st.caption(legenda_prod + ".")
 
     if data_ini_prod is None:
-        dados_all_prod = sb.table("lancamentos").select("*").eq("excluido", False).execute().data
+        dados_all_prod = sb.table("lancamentos").select("*").eq("excluido", False).eq("status", "fechada").execute().data
         df_prod = pd.DataFrame(dados_all_prod)
     else:
         df_prod = carregar_lancamentos(data_ini_prod, data_fim_prod, "Todos", "Todos", "Todos", False)
@@ -2585,7 +2967,7 @@ elif pagina == "📱 Gerar Cobrança":
     st.markdown("### 📱 Gerar Cobrança (WhatsApp)")
     st.caption("Levanta as pendências de todos os dias e produtos do cliente.")
 
-    dados_all = sb.table("lancamentos").select("*").eq("excluido", False).execute().data
+    dados_all = sb.table("lancamentos").select("*").eq("excluido", False).eq("status", "fechada").execute().data
     df_all = pd.DataFrame(dados_all)
 
     if df_all.empty:
