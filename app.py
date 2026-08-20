@@ -1059,6 +1059,14 @@ MENU_ADMIN = ["🧾 Lançamento", "🗂️ Comandas Abertas", "📋 Extrato", "�
               "📑 Fechamento", "💰 Pgtos. Pendentes", "🔄 Abatimento/Reembolso", "📱 Gerar Cobrança",
               "⚙️ Configurações", "📲 Instalar App"]
 
+# Navegação disparada por botão (ex.: "➕ Adicionar itens" nas Comandas Abertas).
+# Precisa mudar o session_state ANTES do st.radio abaixo ser criado — depois
+# disso o Streamlit não deixa mais alterar o valor de um widget já instanciado
+# nesta mesma execução.
+pagina_alvo = st.session_state.pop("ir_para_pagina", None)
+if pagina_alvo:
+    st.session_state["menu_radio"] = pagina_alvo
+
 with st.sidebar:
     st.caption(f"👤 Conectado como **{USUARIO}**")
     st.markdown("**menu:**")
@@ -1863,7 +1871,7 @@ elif pagina == "🗂️ Comandas Abertas":
             with bc1:
                 if st.button("➕ Adicionar itens", key=f"add_{comanda['pedido_id']}", use_container_width=True):
                     st.session_state["lancamento_cliente_pre"] = comanda["cliente"]
-                    st.session_state["menu_radio"] = "🧾 Lançamento"
+                    st.session_state["ir_para_pagina"] = "🧾 Lançamento"
                     st.rerun()
             with bc2:
                 if st.button(
