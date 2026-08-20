@@ -1445,6 +1445,11 @@ elif pagina == "🧾 Lançamento":
 
     if "carrinho" not in st.session_state:
         st.session_state["carrinho"] = []
+    carrinho = st.session_state["carrinho"]
+    # Enquanto tem item ainda não guardado no carrinho, trava cliente/missão —
+    # senão dá pra trocar o cliente no meio do pedido e os itens acabam indo
+    # pra pessoa errada.
+    carrinho_pendente = bool(carrinho)
 
     # Contadores usados para LIMPAR os campos: ao incrementar, os widgets recebem
     # uma key nova e voltam ao valor default (é o jeito de "zerar" no Streamlit).
@@ -1488,7 +1493,13 @@ elif pagina == "🧾 Lançamento":
             placeholder="Escolha...",
             key=f"sel_cliente_{NP}",
             help="Escolha um cliente previamente cadastrado.",
+            disabled=carrinho_pendente,
         )
+        if carrinho_pendente:
+            st.caption(
+                "🔒 Travado — tem item novo ainda não guardado. "
+                "Guarde na comanda, feche o pedido ou limpe os itens novos pra trocar de cliente."
+            )
 
     comanda_aberta = buscar_comanda_aberta(cliente_sel) if cliente_sel else None
 
@@ -1506,7 +1517,7 @@ elif pagina == "🧾 Lançamento":
             missao_sel = comanda_aberta["evento"]
             st.text_input("🎯 Missão", value=missao_sel, disabled=True)
         else:
-            missao_sel = st.selectbox("🎯 Missão", lista_missoes)
+            missao_sel = st.selectbox("🎯 Missão", lista_missoes, disabled=carrinho_pendente)
 
     if comanda_aberta:
         st.info(
@@ -1592,7 +1603,6 @@ elif pagina == "🧾 Lançamento":
                 st.rerun()
 
     # --- carrinho (itens novos desta rodada) + itens já guardados na comanda ---
-    carrinho = st.session_state["carrinho"]
     itens_existentes = comanda_aberta["itens"] if comanda_aberta else []
 
     if carrinho or itens_existentes:
