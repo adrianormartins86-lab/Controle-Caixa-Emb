@@ -1749,6 +1749,7 @@ elif pagina == "🧾 Lançamento":
                             data_para_gravar, observacao.strip() or None, carrinho,
                         )
                         st.session_state["carrinho"] = []
+                        st.session_state["n_pedido"] += 1
                         st.session_state["n_item"] += 1
                         st.session_state["rolar"] = "topo"
                         st.session_state["flash"] = (
