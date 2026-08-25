@@ -2076,6 +2076,11 @@ elif pagina == "📋 Extrato":
             grupos.append({
                 "pedido_id": pid,
                 "data_lancamento": sub["data_lancamento"].iloc[0],
+                # usado só pra ordenar (mais antigo primeiro) — não aparece na tela
+                "criado_em_ord": (
+                    sub["criado_em"].min() if "criado_em" in sub.columns
+                    else sub["data_lancamento"].iloc[0]
+                ),
                 "data_pagamento": sub["data_pagamento"].iloc[0],
                 "cliente": sub["cliente"].iloc[0],
                 "evento": sub["evento"].iloc[0],
@@ -2089,7 +2094,7 @@ elif pagina == "📋 Extrato":
                              else ("💸 Parcial" if sub["valor_pago"].sum() > 0.001
                                    else "⏳ Pendente")),
             })
-        df_ped = pd.DataFrame(grupos).sort_values(["situacao", "cliente"])
+        df_ped = pd.DataFrame(grupos).sort_values("criado_em_ord", ascending=True)
 
         # abatimentos/reembolsos do mesmo período (e cliente, se filtrado)
         # descontam do card "A receber" — não mexem no pendente de cada
