@@ -2919,6 +2919,11 @@ elif pagina == "💰 Pgtos. Pendentes":
             grupos_pgto.append({
                 "pedido_id": pid,
                 "data_lancamento": sub["data_lancamento_fmt"].iloc[0],
+                # usado só pra ordenar (mais antigo primeiro) — não aparece na tela
+                "criado_em_ord": (
+                    sub["criado_em"].min() if "criado_em" in sub.columns
+                    else sub["data_lancamento"].iloc[0]
+                ),
                 "cliente": sub["cliente"].iloc[0],
                 "itens": resumo_itens_pgto(sub),
                 "total": round(sub["total"].sum(), 2),
@@ -2926,6 +2931,10 @@ elif pagina == "💰 Pgtos. Pendentes":
                 "pendente": round(sub["pendente"].sum(), 2),
             })
         df_ped_pgto = pd.DataFrame(grupos_pgto)
+        if not df_ped_pgto.empty:
+            # mais antigo primeiro — pedido_id é um hex aleatório, não dá pra
+            # confiar na ordem de chegada do groupby
+            df_ped_pgto = df_ped_pgto.sort_values("criado_em_ord", ascending=True).reset_index(drop=True)
 
         def registrar_pagamento_pedido(pedido_id: str, valor_recebido: float, df_ref: pd.DataFrame,
                                         forma: str | None = None):
@@ -2952,12 +2961,84 @@ elif pagina == "💰 Pgtos. Pendentes":
                     update["forma_pagamento"] = forma
                 sb.table("lancamentos").update(update).eq("id", int(item["id"])).execute()
 
+        def liquidar_pedidos_por_valor(valor_recebido: float, pedidos_ordenados: pd.DataFrame,
+                                        df_ref: pd.DataFrame, forma: str) -> tuple[list[dict], float]:
+            """Aplica um valor recebido nos pedidos em aberto, do mais antigo pro mais novo,
+            até esgotar o valor (ou os pedidos). Pedido com pagamento parcial recebe o
+            complemento primeiro. Retorna o detalhe do que foi aplicado e o troco não usado
+            (sobra só existe se o valor informado for maior que o total pendente)."""
+            if "criado_em_ord" in pedidos_ordenados.columns:
+                pedidos_ordenados = pedidos_ordenados.sort_values("criado_em_ord", ascending=True)
+            restante = round(valor_recebido, 2)
+            detalhes = []
+            for _, ped in pedidos_ordenados.iterrows():
+                if restante <= 0.001:
+                    break
+                pendente = round(ped["pendente"], 2)
+                if pendente <= 0.001:
+                    continue
+                aplicado = round(min(pendente, restante), 2)
+                novo_valor_pago = round(ped["valor_pago"] + aplicado, 2)
+                registrar_pagamento_pedido(ped["pedido_id"], novo_valor_pago, df_ref, forma)
+                restante = round(restante - aplicado, 2)
+                detalhes.append({
+                    "data": ped["data_lancamento"],
+                    "itens": ped["itens"],
+                    "aplicado": aplicado,
+                    "quitado": aplicado >= pendente - 0.001,
+                })
+            return detalhes, restante
+
         pedidos_abertos_pgto = df_ped_pgto.loc[df_ped_pgto["pendente"] > 0.001] if not df_ped_pgto.empty else df_ped_pgto
 
         if pedidos_abertos_pgto.empty:
             st.success("Nenhum pagamento pendente com esses filtros. 🎉")
         else:
             st.caption("Escolha a forma, digite quanto o cliente pagou e salve. O sistema recalcula o pendente sozinho.")
+
+            if cliente_filtro_pgto != "Todos":
+                with st.container(border=True):
+                    st.markdown(f"**💵 Liquidar por valor — {cliente_filtro_pgto}**")
+                    st.caption(
+                        "Digite quanto o cliente pagou agora. O sistema quita os pedidos "
+                        "mais antigos primeiro, na ordem, até esgotar o valor."
+                    )
+                    total_devido_cli = float(pedidos_abertos_pgto["pendente"].sum())
+                    lv1, lv2, lv3 = st.columns([1.3, 1.3, 1.2])
+                    with lv1:
+                        valor_liquidar = st.number_input(
+                            "Valor recebido (R$)", min_value=0.0, max_value=total_devido_cli,
+                            step=0.50, format="%.2f", key="pgto_valor_liquidar",
+                        )
+                    with lv2:
+                        forma_liquidar = st.selectbox("Forma", FORMAS_PAGAMENTO, key="pgto_forma_liquidar")
+                    with lv3:
+                        st.markdown("<br>", unsafe_allow_html=True)
+                        liquidar_clicado = st.button(
+                            "✅ Liquidar mais antigos", key="pgto_btn_liquidar",
+                            use_container_width=True, disabled=valor_liquidar <= 0,
+                        )
+                    if liquidar_clicado:
+                        detalhes, sobra = liquidar_pedidos_por_valor(
+                            valor_liquidar, pedidos_abertos_pgto, df_validos_pgto, forma_liquidar,
+                        )
+                        if not detalhes:
+                            st.warning("Nenhum pedido pendente para liquidar.")
+                        else:
+                            linhas_msg = [
+                                f"- {d['data']} — {d['itens']}: R\\$ {d['aplicado']:.2f}"
+                                f" ({'quitado' if d['quitado'] else 'parcial'})"
+                                for d in detalhes
+                            ]
+                            msg = (
+                                f"Liquidado R\\$ {(valor_liquidar - sobra):.2f} de {cliente_filtro_pgto} "
+                                f"({forma_liquidar}), do mais antigo pro mais novo:\n\n"
+                                + "\n".join(linhas_msg)
+                            )
+                            if sobra > 0.009:
+                                msg += f"\n\nSobrou R\\$ {sobra:.2f} não aplicado (não há mais pendências)."
+                            st.session_state["pgto_confirmacao"] = msg
+                        st.rerun()
 
             for _, ped in pedidos_abertos_pgto.iterrows():
                 pid = ped["pedido_id"]
