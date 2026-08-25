@@ -2595,13 +2595,19 @@ elif pagina == "📊 Resumo por cliente":
     lista_missao_resumo = ["Todos"] + (
         df_ev_todos_resumo["nome"].tolist() if not df_ev_todos_resumo.empty else []
     )
+    cli_historico_resumo = clientes_existentes_no_historico()
+    df_cli_todos_resumo = carregar_clientes(somente_ativos=False)
+    cli_cadastrados_resumo = df_cli_todos_resumo["nome"].tolist() if not df_cli_todos_resumo.empty else []
+    lista_cli_resumo = ["Todos"] + sorted(list(set(cli_historico_resumo + cli_cadastrados_resumo)))
 
-    col_modo, col_missao = st.columns([3, 1.3])
+    col_modo, col_cliente, col_missao = st.columns([2.4, 1.3, 1.3])
     with col_modo:
         modo_data_resumo = st.radio(
             "Filtrar por", ["Todos os períodos", "Período", "Dia único"],
             horizontal=True, key="resumo_modo_data",
         )
+    with col_cliente:
+        cliente_filtro_resumo = st.selectbox("Cliente", lista_cli_resumo, key="resumo_cliente")
     with col_missao:
         missao_filtro_resumo = st.selectbox("Missão", lista_missao_resumo, key="resumo_missao")
 
@@ -2628,6 +2634,8 @@ elif pagina == "📊 Resumo por cliente":
         )
     if missao_filtro_resumo != "Todos":
         legenda_resumo += f"  •  Missão: {missao_filtro_resumo}"
+    if cliente_filtro_resumo != "Todos":
+        legenda_resumo += f"  •  Cliente: {cliente_filtro_resumo}"
     st.caption(legenda_resumo + ".")
 
     if data_ini_resumo is None:
@@ -2637,8 +2645,10 @@ elif pagina == "📊 Resumo por cliente":
             df_all = df_all.loc[df_all["evento"] == missao_filtro_resumo]
     else:
         df_all = carregar_lancamentos(
-            data_ini_resumo, data_fim_resumo, "Todos", "Todos", missao_filtro_resumo, False
+            data_ini_resumo, data_fim_resumo, cliente_filtro_resumo, "Todos", missao_filtro_resumo, False
         )
+    if cliente_filtro_resumo != "Todos" and not df_all.empty and "cliente" in df_all.columns:
+        df_all = df_all.loc[df_all["cliente"] == cliente_filtro_resumo]
 
     if df_all.empty:
         if data_ini_resumo is None and missao_filtro_resumo == "Todos":
@@ -2683,18 +2693,108 @@ elif pagina == "📊 Resumo por cliente":
         if resumo["abatido"].sum() > 0.001:
             st.caption(f"(já descontado {fmt_moeda(resumo['abatido'].sum())} em abatimentos/reembolsos)")
 
-        st.dataframe(
-            resumo[["cliente", "total", "valor_pago", "abatido", "pendente"]],
-            hide_index=True,
-            use_container_width=True,
-            column_config={
-                "cliente": st.column_config.TextColumn("Cliente"),
-                "total": st.column_config.NumberColumn("Total (R$)", format="R$ %.2f"),
-                "valor_pago": st.column_config.NumberColumn("Pago (R$)", format="R$ %.2f"),
-                "abatido": st.column_config.NumberColumn("Abatido (R$)", format="R$ %.2f"),
-                "pendente": st.column_config.NumberColumn("Devendo (R$)", format="R$ %.2f"),
-            },
-        )
+        if cliente_filtro_resumo == "Todos":
+            st.dataframe(
+                resumo[["cliente", "total", "valor_pago", "abatido", "pendente"]],
+                hide_index=True,
+                use_container_width=True,
+                column_config={
+                    "cliente": st.column_config.TextColumn("Cliente"),
+                    "total": st.column_config.NumberColumn("Total (R$)", format="R$ %.2f"),
+                    "valor_pago": st.column_config.NumberColumn("Pago (R$)", format="R$ %.2f"),
+                    "abatido": st.column_config.NumberColumn("Abatido (R$)", format="R$ %.2f"),
+                    "pendente": st.column_config.NumberColumn("Devendo (R$)", format="R$ %.2f"),
+                },
+            )
+        else:
+            # cliente específico selecionado: mostra o extrato dele, pedido a
+            # pedido, igual à tela de Extrato — mesmas colunas e o mesmo
+            # detalhe item a item, só que já filtrado pra esse cliente.
+            df_cli_det = df_all.copy()
+            df_cli_det["data_lancamento"] = pd.to_datetime(df_cli_det["data_lancamento"]).dt.strftime("%d/%m/%Y")
+            if "data_pagamento" in df_cli_det.columns:
+                df_cli_det["data_pagamento"] = pd.to_datetime(
+                    df_cli_det["data_pagamento"]
+                ).dt.strftime("%d/%m/%Y").fillna("-")
+            else:
+                df_cli_det["data_pagamento"] = "-"
+
+            def situacao_linha_resumo(row):
+                if row.get("excluido"):
+                    return "🚫 Excluído"
+                if row["pendente"] <= 0.001:
+                    return "✅ Pago"
+                if row["valor_pago"] > 0.001:
+                    return "💸 Parcial"
+                return "⏳ Pendente"
+
+            df_cli_det["situacao"] = df_cli_det.apply(situacao_linha_resumo, axis=1)
+
+            def resumo_itens_cli(sub: pd.DataFrame) -> str:
+                partes = []
+                for _, r in sub.iterrows():
+                    p = f"{int(r['quantidade'])}x {r['produto']}"
+                    if r.get("obs_item"):
+                        p += f" ({r['obs_item']})"
+                    partes.append(p)
+                return ", ".join(partes)
+
+            grupos_cli = []
+            for pid, sub in df_cli_det.groupby("pedido_id"):
+                grupos_cli.append({
+                    "data_lancamento": sub["data_lancamento"].iloc[0],
+                    "data_pagamento": sub["data_pagamento"].iloc[0],
+                    "evento": sub["evento"].iloc[0] if "evento" in sub.columns else "",
+                    "itens": resumo_itens_cli(sub),
+                    "total": round(sub["total"].sum(), 2),
+                    "valor_pago": round(sub["valor_pago"].sum(), 2),
+                    "pendente": round(sub["pendente"].sum(), 2),
+                    "observacao": sub["observacao"].iloc[0] if "observacao" in sub.columns else "",
+                    "lancado_por": sub["lancado_por"].iloc[0] if "lancado_por" in sub.columns else "",
+                    "situacao": ("✅ Pago" if sub["pendente"].sum() <= 0.001
+                                 else ("💸 Parcial" if sub["valor_pago"].sum() > 0.001
+                                       else "⏳ Pendente")),
+                })
+            df_ped_cli = pd.DataFrame(grupos_cli).sort_values(["situacao", "data_lancamento"])
+
+            st.markdown(f"#### 📦 Pedidos de {cliente_filtro_resumo}")
+            st.dataframe(
+                df_ped_cli[["data_lancamento", "data_pagamento", "evento", "itens",
+                            "total", "valor_pago", "pendente", "situacao", "observacao",
+                            "lancado_por"]],
+                hide_index=True,
+                use_container_width=True,
+                column_config={
+                    "data_lancamento": st.column_config.TextColumn("Data Lanç."),
+                    "data_pagamento": st.column_config.TextColumn("Data Pgto"),
+                    "evento": st.column_config.TextColumn("Missão"),
+                    "itens": st.column_config.TextColumn("Itens do Pedido", width="large"),
+                    "total": st.column_config.NumberColumn("Total", format="R$ %.2f"),
+                    "valor_pago": st.column_config.NumberColumn("Pgto Parcial", format="R$ %.2f"),
+                    "pendente": st.column_config.NumberColumn("Valor Pendente", format="R$ %.2f"),
+                    "situacao": st.column_config.TextColumn("Situação"),
+                    "observacao": st.column_config.TextColumn("Obs. Pedido"),
+                    "lancado_por": st.column_config.TextColumn("Lançado por", width="small"),
+                },
+            )
+
+            with st.expander("🔍 Ver detalhe item a item"):
+                st.dataframe(
+                    df_cli_det[["data_lancamento", "evento", "produto", "obs_item",
+                                "quantidade", "preco_unitario", "total", "situacao"]],
+                    hide_index=True,
+                    use_container_width=True,
+                    column_config={
+                        "data_lancamento": st.column_config.TextColumn("Data"),
+                        "evento": st.column_config.TextColumn("Missão"),
+                        "produto": st.column_config.TextColumn("Produto"),
+                        "obs_item": st.column_config.TextColumn("Obs."),
+                        "quantidade": st.column_config.NumberColumn("Qtde"),
+                        "preco_unitario": st.column_config.NumberColumn("Preço Unit.", format="R$ %.2f"),
+                        "total": st.column_config.NumberColumn("Total", format="R$ %.2f"),
+                        "situacao": st.column_config.TextColumn("Situação"),
+                    },
+                )
 
 # ============================================================
 # TELA: RESUMO POR PRODUTO
