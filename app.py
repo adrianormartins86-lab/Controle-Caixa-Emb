@@ -785,6 +785,15 @@ def carregar_abatimentos(somente_ativos: bool = True) -> pd.DataFrame:
     dados = q.order("data", desc=True).execute().data
     return pd.DataFrame(dados)
 
+def carregar_despesas(somente_ativos: bool = True) -> pd.DataFrame:
+    """Despesas do dia a dia (compras, contas etc.) — não têm relação com
+    cliente, é só um registro de saída de caixa por descrição e valor."""
+    q = sb.table("despesas").select("*")
+    if somente_ativos:
+        q = q.eq("excluido", False)
+    dados = q.order("data", desc=True).execute().data
+    return pd.DataFrame(dados)
+
 # Formas de pagamento aceitas
 FORMAS_PAGAMENTO = ["Dinheiro", "Pix", "Cartão Débito", "Cartão Crédito", "Bonificação"]
 
@@ -1056,7 +1065,7 @@ def gerar_pdf_resumo_produto(periodo_txt, total_geral, recebido, a_receber_total
 # fica liberado para o perfil operador.
 MENU_USUARIO = ["🧾 Lançamento", "🗂️ Comandas Abertas", "📋 Extrato", "⚙️ Configurações", "📲 Instalar App"]
 MENU_ADMIN = ["🧾 Lançamento", "🗂️ Comandas Abertas", "📋 Extrato", "📊 Resumo por cliente", "📦 Resumo por Produto",
-              "📑 Fechamento", "💰 Pgtos. Pendentes", "🔄 Abatimento/Reembolso", "📱 Gerar Cobrança",
+              "📑 Fechamento", "💰 Pgtos. Pendentes", "🔄 Abatimento/Reembolso", "💸 Despesas", "📱 Gerar Cobrança",
               "⚙️ Configurações", "📲 Instalar App"]
 
 # Navegação disparada por botão (ex.: "➕ Adicionar itens" nas Comandas Abertas).
@@ -2378,6 +2387,110 @@ elif pagina == "🔄 Abatimento/Reembolso":
                         "excluido_em": datetime.now(TZ).isoformat(),
                     }).eq("id", int(id_excluir_ab)).execute()
                     st.success("Abatimento excluído (fica guardado com o motivo).")
+                    st.rerun()
+
+# ============================================================
+# TELA: DESPESAS — registro de saídas de caixa (compras, contas etc.)
+# ============================================================
+elif pagina == "💸 Despesas":
+    st.markdown("### 💸 Despesas")
+    st.caption(
+        "Escolha o dia e registre os itens de despesa (descrição e valor). "
+        "Pode adicionar quantas linhas precisar antes de salvar."
+    )
+
+    data_despesa = st.date_input("Dia das despesas", value=hoje_br(), format="DD/MM/YYYY", key="despesa_data")
+
+    linhas_iniciais = pd.DataFrame([{"Descrição": "", "Valor (R$)": 0.0} for _ in range(3)])
+    edit_despesas = st.data_editor(
+        linhas_iniciais,
+        num_rows="dynamic",
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "Descrição": st.column_config.TextColumn("Descrição", width="large"),
+            "Valor (R$)": st.column_config.NumberColumn("Valor (R$)", format="%.2f", min_value=0.0, step=0.5),
+        },
+        key="editor_despesas",
+    )
+
+    linhas_validas = edit_despesas[
+        edit_despesas["Descrição"].fillna("").str.strip().ne("")
+        & edit_despesas["Valor (R$)"].fillna(0).gt(0)
+    ]
+    total_lancar = linhas_validas["Valor (R$)"].sum() if not linhas_validas.empty else 0.0
+    st.markdown(f"**Total a lançar: {fmt_moeda(total_lancar)}**")
+
+    if st.button("💾 Registrar despesas do dia", type="primary"):
+        if linhas_validas.empty:
+            st.error("Adicione ao menos uma linha com descrição e valor.")
+        else:
+            registros = [
+                {
+                    "data": data_despesa.isoformat(),
+                    "descricao": row["Descrição"].strip(),
+                    "valor": round(float(row["Valor (R$)"]), 2),
+                    "lancado_por": USUARIO,
+                    "criado_em": AGORA(),
+                }
+                for _, row in linhas_validas.iterrows()
+            ]
+            sb.table("despesas").insert(registros).execute()
+            st.success(
+                f"{len(registros)} despesa(s) registrada(s) em "
+                f"{data_despesa.strftime('%d/%m/%Y')}, totalizando {fmt_moeda(total_lancar)}."
+            )
+            st.rerun()
+
+    st.divider()
+    st.markdown("#### 📜 Despesas registradas")
+
+    df_desp = carregar_despesas(somente_ativos=True)
+    if df_desp.empty:
+        st.info("Nenhuma despesa registrada ainda.")
+    else:
+        df_desp_show = df_desp.copy()
+        df_desp_show["data_fmt"] = pd.to_datetime(df_desp_show["data"]).dt.strftime("%d/%m/%Y")
+        total_despesas = df_desp["valor"].sum()
+        st.caption(f"Total de despesas (ativas): **{fmt_moeda(total_despesas)}**")
+
+        st.dataframe(
+            df_desp_show[["data_fmt", "descricao", "valor", "lancado_por"]]
+                .sort_values("data_fmt", ascending=False),
+            hide_index=True,
+            use_container_width=True,
+            column_config={
+                "data_fmt": st.column_config.TextColumn("Data"),
+                "descricao": st.column_config.TextColumn("Descrição"),
+                "valor": st.column_config.NumberColumn("Valor", format="R$ %.2f"),
+                "lancado_por": st.column_config.TextColumn("Lançado por", width="small"),
+            },
+        )
+
+        with st.expander("🗑️ Excluir uma despesa (correção)"):
+            def formata_despesa(row_id):
+                r = df_desp.loc[df_desp["id"] == row_id].iloc[0]
+                data_fmt = pd.to_datetime(r["data"]).strftime("%d/%m/%Y")
+                return f"{data_fmt} | {r['descricao']} | R$ {r['valor']:.2f}"
+
+            id_excluir_desp = st.selectbox(
+                "Selecione a despesa para excluir",
+                df_desp["id"].tolist(),
+                format_func=formata_despesa,
+                key="sel_excluir_despesa",
+            )
+            motivo_desp = st.text_input("Motivo da exclusão (obrigatório)", key="motivo_despesa")
+            if st.button("Confirmar exclusão", type="secondary", key="excluir_despesa_btn"):
+                if not motivo_desp.strip():
+                    st.error("Informe o motivo da exclusão.")
+                else:
+                    sb.table("despesas").update({
+                        "excluido": True,
+                        "motivo_exclusao": motivo_desp.strip(),
+                        "excluido_por": USUARIO,
+                        "excluido_em": datetime.now(TZ).isoformat(),
+                    }).eq("id", int(id_excluir_desp)).execute()
+                    st.success("Despesa excluída (fica guardada com o motivo).")
                     st.rerun()
 
 # ============================================================
