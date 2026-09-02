@@ -3234,6 +3234,9 @@ elif pagina == "📱 Gerar Cobrança":
                 for _, r in sub.iterrows():
                     valor_txt = f"{r['pendente']:.2f}".replace(".", ",")
                     linhas_msg.append(f"{int(r['quantidade'])} {r['produto']} {valor_txt}")
+                if len(sub) > 1:
+                    total_dia_txt = f"{sub['pendente'].sum():.2f}".replace(".", ",")
+                    linhas_msg.append(f"Total do dia: {total_dia_txt}")
             total_aberto = itens_cli["pendente"].sum()
 
             saudacao = f"Paz, {cli_cobrar}!\n\nSua conta se encontra em aberto do consumo:"
