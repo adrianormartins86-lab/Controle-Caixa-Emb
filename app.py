@@ -3342,7 +3342,7 @@ elif pagina == "📱 Gerar Cobrança":
                 (df_all["cliente"] == cli_cobrar) & (df_all["pendente"] > 0.001)
             ].sort_values("data_lancamento")
             linhas_msg = []
-            for data_ped, sub in itens_cli.groupby("data_fmt"):
+            for data_ped, sub in itens_cli.groupby("data_fmt", sort=False):
                 linhas_msg.append(f"\n{data_ped}")
                 for _, r in sub.iterrows():
                     valor_txt = f"{r['pendente']:.2f}".replace(".", ",")
