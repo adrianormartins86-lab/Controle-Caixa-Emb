@@ -1615,8 +1615,9 @@ elif pagina == "🧾 Lançamento":
                 )
                 # o item já foi para a lista abaixo -> limpa os campos de cima
                 st.session_state["n_item"] += 1
-                # leva a tela direto para a lista do pedido (total, situação e salvar)
-                st.session_state["rolar"] = "#sec-itens"
+                # NÃO rola a tela: fica na tela de "Adicionar produto" para o
+                # cliente poder lançar mais itens seguidos; quem desce pro
+                # total/pagamento é o próprio usuário, manualmente.
                 st.rerun()
 
     # --- carrinho (itens novos desta rodada) + itens já guardados na comanda ---
