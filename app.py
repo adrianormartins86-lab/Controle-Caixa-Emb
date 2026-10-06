@@ -558,6 +558,31 @@ AGORA = lambda: datetime.now(TZ).isoformat()
 # ------------------------------------------------------------
 # Funções de dados
 # ------------------------------------------------------------
+TAM_PAGINA_SB = 1000  # limite padrão de linhas por requisição do Supabase (PostgREST)
+
+def buscar_tudo(montar_query) -> list[dict]:
+    """Executa um SELECT paginado e devolve TODAS as linhas.
+
+    O Supabase corta qualquer SELECT em 1000 linhas sem avisar. Quando a
+    tabela passa disso, relatórios ficam incompletos (ex.: o Fechamento com
+    'Todos' perdia os lançamentos mais antigos). Aqui buscamos de 1000 em
+    1000 até acabar.
+
+    `montar_query` é uma função sem argumentos que devolve a query NOVA a
+    cada chamada (o builder do supabase-py acumula parâmetros se reutilizado).
+    A query precisa ter um .order() com desempate único (ex.: id) para a
+    paginação não pular nem repetir linhas.
+    """
+    linhas: list[dict] = []
+    inicio = 0
+    while True:
+        lote = montar_query().range(inicio, inicio + TAM_PAGINA_SB - 1).execute().data or []
+        linhas.extend(lote)
+        if len(lote) < TAM_PAGINA_SB:
+            break
+        inicio += TAM_PAGINA_SB
+    return linhas
+
 @st.cache_data(ttl=60)
 def carregar_produtos(somente_ativos: bool = True) -> pd.DataFrame:
     q = sb.table("produtos").select("*").order("nome")
@@ -598,31 +623,36 @@ def carregar_lancamentos(
     evento: str = "Todos",
     incluir_excluidos: bool = False,
 ) -> pd.DataFrame:
-    q = (
-        sb.table("lancamentos")
-        .select("*")
-        .gte("data_lancamento", data_ini.isoformat())
-        .lte("data_lancamento", data_fim.isoformat())
-        .order("criado_em", desc=True)
-        # comandas ainda abertas não entram em nenhum relatório —
-        # só aparecem depois de fechadas (ver "🧾 Comandas Abertas")
-        .eq("status", "fechada")
-    )
-    if not incluir_excluidos:
-        q = q.eq("excluido", False)
-    if cliente and cliente != "Todos":
-        q = q.eq("cliente", cliente)
-    if evento and evento != "Todos":
-        q = q.eq("evento", evento)
-    if situacao == "⏳ Pendentes":
-        q = q.eq("pago", False)
-    elif situacao == "✅ Pagos":
-        q = q.eq("pago", True)
-    return pd.DataFrame(q.execute().data)
+    def montar():
+        q = (
+            sb.table("lancamentos")
+            .select("*")
+            .gte("data_lancamento", data_ini.isoformat())
+            .lte("data_lancamento", data_fim.isoformat())
+            .order("criado_em", desc=True)
+            .order("id", desc=True)  # desempate p/ paginação estável
+            # comandas ainda abertas não entram em nenhum relatório —
+            # só aparecem depois de fechadas (ver "🧾 Comandas Abertas")
+            .eq("status", "fechada")
+        )
+        if not incluir_excluidos:
+            q = q.eq("excluido", False)
+        if cliente and cliente != "Todos":
+            q = q.eq("cliente", cliente)
+        if evento and evento != "Todos":
+            q = q.eq("evento", evento)
+        if situacao == "⏳ Pendentes":
+            q = q.eq("pago", False)
+        elif situacao == "✅ Pagos":
+            q = q.eq("pago", True)
+        return q
+    return pd.DataFrame(buscar_tudo(montar))
 
 def clientes_existentes_no_historico() -> list[str]:
     # Busca clientes que já existem na tabela de lançamentos para não perder o histórico
-    dados = sb.table("lancamentos").select("cliente").eq("excluido", False).execute().data
+    dados = buscar_tudo(
+        lambda: sb.table("lancamentos").select("id,cliente").eq("excluido", False).order("id")
+    )
     return sorted({d["cliente"] for d in dados})
 
 # ------------------------------------------------------------
@@ -779,19 +809,23 @@ def remover_item_comanda(item_id: int) -> None:
 def carregar_abatimentos(somente_ativos: bool = True) -> pd.DataFrame:
     """Abatimentos/reembolsos: crédito lançado direto pro cliente (não é forma
     de pagamento de um pedido específico) — abate do total pendente dele."""
-    q = sb.table("abatimentos").select("*")
-    if somente_ativos:
-        q = q.eq("excluido", False)
-    dados = q.order("data", desc=True).execute().data
+    def montar():
+        q = sb.table("abatimentos").select("*")
+        if somente_ativos:
+            q = q.eq("excluido", False)
+        return q.order("data", desc=True).order("id", desc=True)
+    dados = buscar_tudo(montar)
     return pd.DataFrame(dados)
 
 def carregar_despesas(somente_ativos: bool = True) -> pd.DataFrame:
     """Despesas do dia a dia (compras, contas etc.) — não têm relação com
     cliente, é só um registro de saída de caixa por descrição e valor."""
-    q = sb.table("despesas").select("*")
-    if somente_ativos:
-        q = q.eq("excluido", False)
-    dados = q.order("data", desc=True).execute().data
+    def montar():
+        q = sb.table("despesas").select("*")
+        if somente_ativos:
+            q = q.eq("excluido", False)
+        return q.order("data", desc=True).order("id", desc=True)
+    dados = buscar_tudo(montar)
     return pd.DataFrame(dados)
 
 # Formas de pagamento aceitas
@@ -2760,7 +2794,7 @@ elif pagina == "📊 Resumo por cliente":
     st.caption(legenda_resumo + ".")
 
     if data_ini_resumo is None:
-        dados_all = sb.table("lancamentos").select("*").eq("excluido", False).eq("status", "fechada").execute().data
+        dados_all = buscar_tudo(lambda: sb.table("lancamentos").select("*").eq("excluido", False).eq("status", "fechada").order("id"))
         df_all = pd.DataFrame(dados_all)
         if missao_filtro_resumo != "Todos" and not df_all.empty and "evento" in df_all.columns:
             df_all = df_all.loc[df_all["evento"] == missao_filtro_resumo]
@@ -2928,7 +2962,7 @@ elif pagina == "📦 Resumo por Produto":
         df_prod_todos_resumo["nome"].tolist() if not df_prod_todos_resumo.empty else []
     )
     produtos_historico_resumo = sorted({
-        d["produto"] for d in sb.table("lancamentos").select("produto").eq("excluido", False).execute().data
+        d["produto"] for d in buscar_tudo(lambda: sb.table("lancamentos").select("id,produto").eq("excluido", False).order("id"))
     })
     lista_produtos_resumo = ["Todos"] + sorted(set(produtos_cadastrados_resumo + produtos_historico_resumo))
 
@@ -2967,7 +3001,7 @@ elif pagina == "📦 Resumo por Produto":
     st.caption(legenda_prod + ".")
 
     if data_ini_prod is None:
-        dados_all_prod = sb.table("lancamentos").select("*").eq("excluido", False).eq("status", "fechada").execute().data
+        dados_all_prod = buscar_tudo(lambda: sb.table("lancamentos").select("*").eq("excluido", False).eq("status", "fechada").order("id"))
         df_prod = pd.DataFrame(dados_all_prod)
     else:
         df_prod = carregar_lancamentos(data_ini_prod, data_fim_prod, "Todos", "Todos", "Todos", False)
@@ -3313,7 +3347,7 @@ elif pagina == "📱 Gerar Cobrança":
     st.markdown("### 📱 Gerar Cobrança (WhatsApp)")
     st.caption("Levanta as pendências de todos os dias e produtos do cliente.")
 
-    dados_all = sb.table("lancamentos").select("*").eq("excluido", False).eq("status", "fechada").execute().data
+    dados_all = buscar_tudo(lambda: sb.table("lancamentos").select("*").eq("excluido", False).eq("status", "fechada").order("id"))
     df_all = pd.DataFrame(dados_all)
 
     if df_all.empty:
