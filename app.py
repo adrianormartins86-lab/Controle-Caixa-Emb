@@ -615,6 +615,56 @@ def carregar_clientes(somente_ativos: bool = True) -> pd.DataFrame:
 def limpar_cache_clientes():
     carregar_clientes.clear()
 
+def confirmar_exclusao_cadastro(tabela: str, chave: str, rotulo: str, limpar_cache, chave_editor: str):
+    """Mostra o aviso de confirmação para os itens marcados em 'Excluir'.
+
+    Os itens pendentes ficam em st.session_state[chave] como lista de (id, nome).
+    A exclusão apaga só o cadastro: os lançamentos guardam o nome em texto,
+    então o histórico, extratos e relatórios continuam intactos.
+    """
+    pendentes = st.session_state.get(chave)
+    if not pendentes:
+        return
+    nomes = ", ".join(f"**{n}**" for _, n in pendentes)
+    st.warning(
+        f"Excluir definitivamente {len(pendentes)} {rotulo}(s): {nomes}?\n\n"
+        "O histórico de lançamentos é mantido; o cadastro some da lista e não "
+        "volta mais para os lançamentos. Essa ação não pode ser desfeita."
+    )
+    b1, b2 = st.columns(2)
+    if b1.button("🗑️ Sim, excluir", type="primary", key=f"{chave}_sim", use_container_width=True):
+        excluidos, falhas = 0, []
+        for id_, nome in pendentes:
+            try:
+                sb.table(tabela).delete().eq("id", int(id_)).execute()
+                excluidos += 1
+            except Exception as e:
+                falhas.append(f"{nome} ({e})")
+        st.session_state.pop(chave, None)
+        # zera as edições pendentes da tabela: as linhas mudaram de posição
+        st.session_state.pop(chave_editor, None)
+        limpar_cache()
+        if excluidos:
+            st.session_state[f"{chave}_msg"] = f"{excluidos} {rotulo}(s) excluído(s)."
+        if falhas:
+            st.session_state[f"{chave}_erro"] = (
+                "Não foi possível excluir: " + "; ".join(falhas)
+                + ". Se estiver vinculado a outros registros, desmarque **Ativo** em vez de excluir."
+            )
+        st.rerun()
+    if b2.button("Cancelar", key=f"{chave}_nao", use_container_width=True):
+        st.session_state.pop(chave, None)
+        st.session_state.pop(chave_editor, None)
+        st.rerun()
+
+def mostrar_resultado_exclusao(chave: str):
+    msg = st.session_state.pop(f"{chave}_msg", None)
+    erro = st.session_state.pop(f"{chave}_erro", None)
+    if msg:
+        st.success(msg)
+    if erro:
+        st.error(erro)
+
 def carregar_lancamentos(
     data_ini: date,
     data_fim: date,
@@ -1173,8 +1223,13 @@ if pagina == "⚙️ Configurações":
             if "telefone" not in df_cli.columns:
                 df_cli["telefone"] = ""
             df_cli["telefone"] = df_cli["telefone"].fillna("")
+            # Coluna "Excluir" só para admin/gestor (o resto da tela de clientes é liberado para todos)
+            cols_cli = ["id", "nome", "telefone", "ativo"]
+            df_cli_base = df_cli[cols_cli].copy()
+            if EH_ADMIN:
+                df_cli_base["excluir"] = False
             df_cli_edit = st.data_editor(
-                df_cli[["id", "nome", "telefone", "ativo"]],
+                df_cli_base,
                 hide_index=True,
                 use_container_width=True,
                 disabled=["id"],
@@ -1183,10 +1238,19 @@ if pagina == "⚙️ Configurações":
                     "nome": st.column_config.TextColumn("Cliente"),
                     "telefone": st.column_config.TextColumn("Telefone/WhatsApp"),
                     "ativo": st.column_config.CheckboxColumn("Ativo"),
+                    "excluir": st.column_config.CheckboxColumn("Excluir", width="small"),
                 },
                 key="editor_clientes",
             )
+            mostrar_resultado_exclusao("excluir_clientes")
             if st.button("💾 Salvar clientes", key="btn_salvar_clientes"):
+                if EH_ADMIN:
+                    marcados = df_cli_edit[df_cli_edit["excluir"] == True]
+                    if not marcados.empty:
+                        st.session_state["excluir_clientes"] = list(
+                            zip(marcados["id"].tolist(), marcados["nome"].tolist())
+                        )
+                    df_cli_edit = df_cli_edit[df_cli_edit["excluir"] != True]
                 alterados = 0
                 for _, row in df_cli_edit.iterrows():
                     original = df_cli.loc[df_cli["id"] == row["id"]].iloc[0]
@@ -1202,9 +1266,15 @@ if pagina == "⚙️ Configurações":
                 limpar_cache_clientes()
                 if alterados:
                     st.success(f"{alterados} cliente(s) atualizado(s)!")
+                if alterados or st.session_state.get("excluir_clientes"):
+                    st.session_state.pop("editor_clientes", None)
                     st.rerun()
                 else:
                     st.info("Nenhuma alteração detectada.")
+            if EH_ADMIN:
+                confirmar_exclusao_cadastro(
+                    "clientes", "excluir_clientes", "cliente", limpar_cache_clientes, "editor_clientes"
+                )
 
     # ------------------------------------------------------------
     # Daqui para baixo: só Administrador / Meiry (perfil admin ou gestor)
@@ -1247,8 +1317,10 @@ if pagina == "⚙️ Configurações":
         if df_prod.empty:
             st.info("Nenhum produto cadastrado ainda.")
         else:
+            df_prod_base = df_prod[["id", "nome", "preco", "ativo"]].copy()
+            df_prod_base["excluir"] = False
             df_edit = st.data_editor(
-                df_prod[["id", "nome", "preco", "ativo"]],
+                df_prod_base,
                 hide_index=True,
                 use_container_width=True,
                 disabled=["id"],
@@ -1257,11 +1329,19 @@ if pagina == "⚙️ Configurações":
                     "nome": st.column_config.TextColumn("Produto"),
                     "preco": st.column_config.NumberColumn("Preço (R$)", format="R$ %.2f", step=0.50),
                     "ativo": st.column_config.CheckboxColumn("Ativo"),
+                    "excluir": st.column_config.CheckboxColumn("Excluir", width="small"),
                 },
                 key="editor_produtos",
             )
+            mostrar_resultado_exclusao("excluir_produtos")
 
             if st.button("💾 Salvar alterações", type="primary", key="btn_salvar_produtos"):
+                marcados = df_edit[df_edit["excluir"] == True]
+                if not marcados.empty:
+                    st.session_state["excluir_produtos"] = list(
+                        zip(marcados["id"].tolist(), marcados["nome"].tolist())
+                    )
+                df_edit = df_edit[df_edit["excluir"] != True]
                 alterados = 0
                 for _, row in df_edit.iterrows():
                     original = df_prod.loc[df_prod["id"] == row["id"]].iloc[0]
@@ -1281,11 +1361,20 @@ if pagina == "⚙️ Configurações":
                 limpar_cache_produtos()
                 if alterados:
                     st.success(f"{alterados} produto(s) atualizado(s)!")
+                if alterados or st.session_state.get("excluir_produtos"):
+                    st.session_state.pop("editor_produtos", None)
                     st.rerun()
                 else:
                     st.info("Nenhuma alteração detectada.")
 
-            st.caption("💡 Desmarque **Ativo** para tirar um produto do lançamento sem apagar o histórico.")
+            confirmar_exclusao_cadastro(
+                "produtos", "excluir_produtos", "produto", limpar_cache_produtos, "editor_produtos"
+            )
+
+            st.caption(
+                "💡 Desmarque **Ativo** para tirar um produto do lançamento temporariamente. "
+                "Marque **Excluir** e salve quando ele sair de vez — o histórico dos lançamentos é mantido."
+            )
 
 
     # --- missões (no DB a tabela chama 'eventos') ---
