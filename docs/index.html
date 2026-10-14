@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+  <meta name="theme-color" content="#0B3D91">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <title>Caixa EMB</title>
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" href="icons/icon-192.png">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <!-- ===================== LOGIN ===================== -->
+  <section id="tela-login" class="tela-login" hidden>
+    <div class="login-cartao">
+      <img src="icons/logo.png" alt="" class="login-logo">
+      <h1>Gerenciamento de Caixa</h1>
+      <p class="sub">Lançamento de pedidos</p>
+
+      <label class="campo">
+        <span>Usuário</span>
+        <select id="login-usuario"><option value="">Escolha...</option></select>
+      </label>
+      <label class="campo">
+        <span>Senha</span>
+        <!-- type="text" + máscara via CSS: o Chrome/Brave não oferece salvar/gerar senha -->
+        <input id="login-senha" type="text" class="senha" autocomplete="off" autocapitalize="off"
+               autocorrect="off" spellcheck="false" data-lpignore="true" data-form-type="other">
+      </label>
+      <p id="login-erro" class="erro" hidden></p>
+      <button id="btn-entrar" class="btn btn-primario btn-grande">Entrar</button>
+      <p class="versao" id="versao-login"></p>
+    </div>
+  </section>
+
+  <!-- ===================== APP ===================== -->
+  <div id="app" hidden>
+    <header class="topo">
+      <img src="icons/logo.png" alt="" class="topo-logo">
+      <div class="topo-titulo">
+        <strong id="topo-titulo">Novo pedido</strong>
+        <small id="topo-usuario"></small>
+      </div>
+      <button id="btn-sair" class="btn-icone" aria-label="Sair">Sair</button>
+    </header>
+
+    <main id="conteudo">
+      <!-- ---------- LANÇAR ---------- -->
+      <section id="pg-lancar" class="pagina">
+        <div class="cartao">
+          <button id="btn-cliente" class="seletor">
+            <span class="seletor-rotulo">Cliente</span>
+            <span id="cliente-valor" class="seletor-valor vazio">Escolha...</span>
+            <span class="seta">›</span>
+          </button>
+          <p id="aviso-trava" class="dica" hidden>🔒 Cliente travado enquanto houver itens novos. Limpe os itens para trocar.</p>
+
+          <div class="linha-2">
+            <label class="campo">
+              <span>Data</span>
+              <input id="lanc-data" type="date">
+            </label>
+            <label class="campo">
+              <span>Missão</span>
+              <select id="lanc-missao"></select>
+            </label>
+          </div>
+
+          <div id="info-comanda" class="info-comanda" hidden></div>
+        </div>
+
+        <h2 class="titulo-secao">Produtos</h2>
+        <div class="busca-wrap">
+          <input id="busca-produto" type="search" placeholder="Buscar produto..." enterkeyhint="search" autocomplete="off">
+        </div>
+        <div id="grade-produtos" class="grade-produtos"></div>
+
+        <h2 class="titulo-secao" id="titulo-itens" hidden>Itens novos</h2>
+        <div id="lista-carrinho" class="lista-itens"></div>
+
+        <div id="bloco-obs" hidden>
+          <label class="campo">
+            <span>Observação do pedido (opcional)</span>
+            <input id="lanc-obs" type="text" placeholder="Ex.: pagar na sexta, mesa 3..." autocomplete="off">
+          </label>
+          <button id="btn-limpar" class="btn btn-texto">Limpar itens novos</button>
+        </div>
+        <div class="espaco-rodape"></div>
+      </section>
+
+      <!-- ---------- COMANDAS ---------- -->
+      <section id="pg-comandas" class="pagina" hidden>
+        <div id="lista-comandas"></div>
+      </section>
+
+      <!-- ---------- HOJE ---------- -->
+      <section id="pg-hoje" class="pagina" hidden>
+        <div class="cartao">
+          <label class="campo">
+            <span>Dia</span>
+            <input id="hoje-data" type="date">
+          </label>
+        </div>
+        <div id="resumo-dia"></div>
+      </section>
+
+      <!-- ---------- CONFIGURAÇÕES (só admin) ---------- -->
+      <section id="pg-config" class="pagina" hidden>
+        <div class="segmentos" id="cfg-abas">
+          <button data-cfg="produtos" class="sel">Produtos</button>
+          <button data-cfg="missoes">Missões</button>
+          <button data-cfg="clientes">Clientes</button>
+        </div>
+        <div class="busca-wrap"><input id="cfg-busca" type="search" placeholder="Buscar..." autocomplete="off" enterkeyhint="search"></div>
+        <button id="cfg-novo" class="btn btn-primario btn-bloco" style="margin-top:10px">➕ Novo produto</button>
+        <div id="cfg-lista" class="cfg-lista"></div>
+        <p class="dica">Usuários, chave Pix, cobrança e PDF continuam no sistema pelo navegador.</p>
+      </section>
+    </main>
+
+    <!-- barra do total (só na tela Lançar) -->
+    <div id="barra-total" class="barra-total" hidden>
+      <div class="barra-total-valor">
+        <small id="barra-rotulo">Total do pedido</small>
+        <strong id="barra-valor">R$ 0,00</strong>
+      </div>
+      <button id="btn-guardar" class="btn btn-secundario">Guardar</button>
+      <button id="btn-fechar" class="btn btn-primario">Fechar e pagar</button>
+    </div>
+
+    <nav class="abas">
+      <button data-pg="lancar" class="aba ativa"><span class="aba-ic">🧾</span>Lançar</button>
+      <button data-pg="comandas" class="aba"><span class="aba-ic">🗂️</span>Comandas<b id="badge-comandas" class="badge" hidden></b></button>
+      <button data-pg="hoje" class="aba"><span class="aba-ic">📊</span>Hoje</button>
+      <button data-pg="config" class="aba" id="aba-config" hidden><span class="aba-ic">⚙️</span>Config.</button>
+    </nav>
+  </div>
+
+  <!-- ===================== GAVETA (bottom sheet) ===================== -->
+  <div id="veu" class="veu" hidden></div>
+  <div id="gaveta" class="gaveta" hidden role="dialog" aria-modal="true">
+    <div class="gaveta-alca"></div>
+    <div id="gaveta-conteudo"></div>
+  </div>
+
+  <div id="toast" class="toast" hidden></div>
+  <div id="carregando" class="carregando" hidden><div class="spinner"></div></div>
+
+  <script src="config.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
