@@ -792,6 +792,50 @@ document.addEventListener("visibilitychange", async () => {
   }
 });
 
+// ---------- campos de data sempre em dd/mm/aaaa ----------
+// O campo de data nativo mostra o formato do idioma do navegador (num
+// computador em inglês aparece mm/dd/aaaa). Aqui todo <input type="date">
+// do app ganha uma "capa" com a data em português; o campo de verdade fica
+// por baixo (o resto do código continua lendo .value normalmente) e o toque
+// abre o calendário — sem teclado no celular.
+const DESCRITOR_VALOR = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
+function campoDataBR(inp) {
+  if (inp.dataset.br) return;
+  inp.dataset.br = "1";
+  const capa = document.createElement("div");
+  capa.className = "data-br";
+  inp.parentNode.insertBefore(capa, inp);
+  const mostra = document.createElement("button");
+  mostra.type = "button";
+  mostra.className = "data-br-mostra";
+  capa.append(inp, mostra);
+  inp.tabIndex = -1;
+  const desenhar = () => {
+    const v = DESCRITOR_VALOR.get.call(inp);
+    mostra.innerHTML = `<span class="${v ? "" : "vazio"}">${v ? fmtData(v) : "dd/mm/aaaa"}</span><span class="data-br-ic" aria-hidden="true">📅</span>`;
+    mostra.disabled = inp.disabled;
+  };
+  // valor trocado pelo código (ex.: data da comanda) também atualiza a capa
+  Object.defineProperty(inp, "value", {
+    get: () => DESCRITOR_VALOR.get.call(inp),
+    set: (v) => { DESCRITOR_VALOR.set.call(inp, v); desenhar(); },
+  });
+  new MutationObserver(desenhar).observe(inp, { attributes: true, attributeFilter: ["disabled"] });
+  inp.addEventListener("change", desenhar);
+  inp.addEventListener("input", desenhar);
+  mostra.addEventListener("click", () => {
+    if (inp.disabled) return;
+    try { inp.showPicker(); } catch { inp.focus(); inp.click(); }
+  });
+  desenhar();
+}
+const varrerDatas = (raiz) => raiz.querySelectorAll?.('input[type="date"]').forEach(campoDataBR);
+varrerDatas(document);
+new MutationObserver((muds) => muds.forEach((m) => m.addedNodes.forEach((n) => {
+  if (n.nodeType !== 1) return;
+  if (n.matches('input[type="date"]')) campoDataBR(n); else varrerDatas(n);
+}))).observe(document.body, { childList: true, subtree: true });
+
 // ---------- service worker (permite instalar como app) ----------
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => navigator.serviceWorker.register("sw.js").catch(() => {}));
