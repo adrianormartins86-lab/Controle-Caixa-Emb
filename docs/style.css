@@ -396,3 +396,4 @@ a.btn { text-decoration: none; }
 .linha-despesa .lixo-btn:disabled { opacity: .35; }
 .previa-msg { white-space: pre-line; font-size: .9rem; color: var(--texto-suave); }
 #us-perfil button { text-transform: capitalize; }
+.chips-marcador button { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: .85rem; min-height: 40px; }

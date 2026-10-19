@@ -540,8 +540,19 @@ function renderCobranca() {
     </div>`;
 }
 
-// mesmo texto do sistema do navegador
-function montarMensagemCobranca(d) {
+// textos padrão (os mesmos do sistema do navegador); a tela "Mensagem de cobrança"
+// permite trocar a abertura e o fecho. Marcadores: {cliente} {total} {chave_pix} {nome_pix}
+const COB_ABERTURA_PADRAO = "Paz, {cliente}!\n\nSua conta se encontra em aberto do consumo:";
+const COB_FECHO_PADRAO = "Se puder realizar o pix na chave {chave_pix} ({nome_pix}) e mandar o comprovante, agradecemos.\nDeus abençoe!!";
+
+function aplicarMarcadores(txt, v) {
+  let t = String(txt || "");
+  if (!v.nome_pix) t = t.replace(/\s*\(\{nome_pix\}\)/g, "");   // sem nome: some o "( )"
+  return t.replace(/\{(cliente|total|chave_pix|nome_pix)\}/g, (_, k) => v[k] ?? "");
+}
+
+// d: devedor { cliente, itens, total, bruto, abatido }; cfg: { pix_chave, pix_nome, cob_abertura, cob_fecho }
+function montarMensagemCobranca(d, cfg = cobranca) {
   const grupos = [];
   for (const it of d.itens) {
     const data = fmtData(it.data);
@@ -559,12 +570,13 @@ function montarMensagemCobranca(d) {
   let fecho = Number(d.abatido) > 0.001
     ? `\n\nSubtotal: R$ ${dinheiroTxt(d.bruto)}\nAbatimento/crédito: - R$ ${dinheiroTxt(d.abatido)}\nTotal em aberto: R$ ${dinheiroTxt(d.total)}`
     : `\n\nTotal em aberto: R$ ${dinheiroTxt(d.total)}`;
-  if (cobranca.pix_chave) {
-    fecho += `\n\nSe puder realizar o pix na chave ${cobranca.pix_chave}` +
-      (cobranca.pix_nome ? ` (${cobranca.pix_nome})` : "") +
-      " e mandar o comprovante, agradecemos.\nDeus abençoe!!";
+  const vars = { cliente: d.cliente, total: `R$ ${dinheiroTxt(d.total)}`, chave_pix: cfg.pix_chave || "", nome_pix: cfg.pix_nome || "" };
+  const tplFecho = cfg.cob_fecho || COB_FECHO_PADRAO;
+  // como antes: sem chave Pix cadastrada, o fecho que fala da chave não entra
+  if (tplFecho.trim() && !(tplFecho.includes("{chave_pix}") && !cfg.pix_chave)) {
+    fecho += "\n\n" + aplicarMarcadores(tplFecho, vars);
   }
-  return `Paz, ${d.cliente}!\n\nSua conta se encontra em aberto do consumo:\n` + linhas.join("\n") + fecho;
+  return aplicarMarcadores(cfg.cob_abertura || COB_ABERTURA_PADRAO, vars) + "\n" + linhas.join("\n") + fecho;
 }
 
 function linkWhatsapp(tel, msg) {

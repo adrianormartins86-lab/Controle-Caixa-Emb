@@ -182,7 +182,7 @@ const TITULOS = {
   lancar: "Novo pedido", comandas: "Comandas abertas", hoje: "Resumo do dia", mais: "Mais opções",
   config: "Configurações", extrato: "Extrato", pendentes: "Pagamentos pendentes", cobranca: "Gerar cobrança",
   fechamento: "Fechamento", resumocli: "Resumo por cliente", resumoprod: "Resumo por produto",
-  abatimentos: "Abatimento / Reembolso", despesas: "Despesas", pix: "Chave Pix", usuarios: "Usuários",
+  abatimentos: "Abatimento / Reembolso", despesas: "Despesas", pix: "Mensagem de cobrança", usuarios: "Usuários",
 };
 const PAGINAS = Object.keys(TITULOS);
 // telas que ficam dentro do "Mais" (só administrador)

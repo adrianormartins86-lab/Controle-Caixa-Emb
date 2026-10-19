@@ -1,7 +1,7 @@
 // Service worker: deixa o app instalável e abre mesmo com internet ruim.
 // Estratégia "rede primeiro": sempre tenta a versão nova; se falhar, usa a guardada.
 // Chamadas ao Supabase NÃO passam por aqui (são sempre ao vivo).
-const CACHE = "caixa-emb-v5";
+const CACHE = "caixa-emb-v6";
 const ARQUIVOS = ["./", "index.html", "style.css", "app.js", "admin.js", "relatorios.js", "cadastros.js", "config.js", "manifest.json", "icons/logo.png", "icons/icon-192.png"];
 
 self.addEventListener("install", (e) => {

@@ -1,5 +1,5 @@
 // ============================================================
-// Caixa EMB — Abatimento/Reembolso, Despesas, Chave Pix e Usuários
+// Caixa EMB — Abatimento/Reembolso, Despesas, Mensagem de cobrança e Usuários
 // (só Administrador e Meiry; Usuários só para o perfil admin)
 // Usa as utilidades do app.js e do admin.js.
 // Funções do banco: sql_mobile/04_funcoes_fase3.sql
@@ -198,8 +198,10 @@ $("#despesas-conteudo").addEventListener("click", (e) => {
 });
 
 // ============================================================
-// CHAVE PIX
+// MENSAGEM DE COBRANÇA (chave Pix + textos de abertura e fecho)
 // ============================================================
+const MARCADORES = [["{cliente}", "nome do cliente"], ["{total}", "total em aberto"], ["{chave_pix}", "chave Pix"], ["{nome_pix}", "nome do recebedor"]];
+
 async function carregarPix() {
   const el = $("#pix-conteudo");
   el.innerHTML = `<div class="vazio-msg">Carregando...</div>`;
@@ -210,24 +212,65 @@ async function carregarPix() {
     <div class="cartao">
       <label class="campo"><span>Chave Pix / número</span><input id="px-chave" type="text" autocomplete="off" value="${esc(p.chave || "")}"></label>
       <label class="campo"><span>Nome do recebedor</span><input id="px-nome" type="text" autocomplete="off" value="${esc(p.nome || "")}"></label>
+    </div>
+    <div class="cartao">
+      <label class="campo"><span>Abertura (antes da lista do consumo)</span>
+        <textarea id="px-abertura" rows="3">${esc(p.abertura || COB_ABERTURA_PADRAO)}</textarea></label>
+      <button class="btn btn-texto" data-padrao="abertura">↺ Voltar ao texto padrão</button>
+      <label class="campo" style="margin-top:6px"><span>Fecho (depois do total)</span>
+        <textarea id="px-fecho" rows="4">${esc(p.fecho || COB_FECHO_PADRAO)}</textarea></label>
+      <button class="btn btn-texto" data-padrao="fecho">↺ Voltar ao texto padrão</button>
+      <div class="campo" style="margin:10px 0 6px"><span>Toque para inserir no texto (troca pelo valor real de cada cliente):</span></div>
+      <div class="chips chips-marcador">${MARCADORES.map(([m, d]) => `<button data-m="${m}" title="${d}">${m}</button>`).join("")}</div>
+      <p class="dica" style="margin-top:-6px">A lista do consumo e os totais entram sozinhos entre a abertura e o fecho. Sem chave Pix cadastrada, um fecho que usa {chave_pix} não entra na mensagem.</p>
       <button class="btn btn-primario btn-bloco" id="px-salvar">💾 Salvar</button>
     </div>
-    <h2 class="titulo-secao">Como aparece no fim da cobrança</h2>
+    <h2 class="titulo-secao">Prévia (cliente de exemplo)</h2>
     <div class="cartao previa-msg" id="px-previa"></div>`;
+
+  let ultimoCampo = $("#px-fecho");
+  const cfgAtual = () => ({
+    pix_chave: $("#px-chave").value.trim(), pix_nome: $("#px-nome").value.trim(),
+    cob_abertura: $("#px-abertura").value, cob_fecho: $("#px-fecho").value,
+  });
+  const exemplo = { cliente: "Maria", bruto: 25, abatido: 0, total: 25, itens: [
+    { data: hojeISO(), produto: "Marmita", quantidade: 1, pendente: 18 },
+    { data: hojeISO(), produto: "Refrigerante", quantidade: 1, pendente: 7 }] };
   const previa = () => {
-    const c = $("#px-chave").value.trim(), n = $("#px-nome").value.trim();
-    $("#px-previa").textContent = c
-      ? `Se puder realizar o pix na chave ${c}${n ? ` (${n})` : ""} e mandar o comprovante, agradecemos.\nDeus abençoe!!`
-      : "Sem chave Pix: a mensagem termina no total em aberto.";
+    const c = cfgAtual();
+    // campo apagado de propósito: mensagem fica sem aquele trecho
+    if (!c.cob_abertura.trim()) c.cob_abertura = " ";
+    if (!c.cob_fecho.trim()) c.cob_fecho = " ";
+    $("#px-previa").textContent = montarMensagemCobranca(exemplo, c).trim();
   };
-  $("#px-chave").addEventListener("input", previa);
-  $("#px-nome").addEventListener("input", previa);
+  ["#px-chave", "#px-nome", "#px-abertura", "#px-fecho"].forEach((s) => $(s).addEventListener("input", previa));
+  ["#px-abertura", "#px-fecho"].forEach((s) => $(s).addEventListener("focus", (e) => (ultimoCampo = e.target)));
+  el.querySelectorAll("textarea,input").forEach((x) => x.addEventListener("focus", () => setTimeout(() => x.scrollIntoView({ block: "center", behavior: "smooth" }), 250)));
+  el.querySelector(".chips-marcador").addEventListener("click", (e) => {
+    const b = e.target.closest("[data-m]");
+    if (!b) return;
+    const t = ultimoCampo, ini = t.selectionStart ?? t.value.length, fim = t.selectionEnd ?? t.value.length;
+    t.value = t.value.slice(0, ini) + b.dataset.m + t.value.slice(fim);
+    t.focus();
+    t.setSelectionRange(ini + b.dataset.m.length, ini + b.dataset.m.length);
+    previa();
+  });
+  el.querySelectorAll("[data-padrao]").forEach((b) => (b.onclick = () => {
+    const alvo = b.dataset.padrao === "abertura" ? $("#px-abertura") : $("#px-fecho");
+    alvo.value = b.dataset.padrao === "abertura" ? COB_ABERTURA_PADRAO : COB_FECHO_PADRAO;
+    previa();
+  }));
   previa();
+
   $("#px-salvar").onclick = async () => {
+    const c = cfgAtual();
+    // igual ao padrão: guarda vazio (se um dia o padrão mudar, acompanha)
+    const ab = c.cob_abertura.trim() === COB_ABERTURA_PADRAO ? "" : (c.cob_abertura.trim() || " ");
+    const fe = c.cob_fecho.trim() === COB_FECHO_PADRAO ? "" : (c.cob_fecho.trim() || " ");
     carregando(true);
     try {
-      await rpc("mob_salvar_pix", { p_token: sessao.token, p_chave: $("#px-chave").value, p_nome: $("#px-nome").value });
-      toast("Chave Pix salva. Já vale para as próximas cobranças.", "ok");
+      await rpc("mob_salvar_mensagem", { p_token: sessao.token, p_chave: c.pix_chave, p_nome: c.pix_nome, p_abertura: ab, p_fecho: fe });
+      toast("Mensagem salva. Já vale para as próximas cobranças.", "ok");
     } catch (e) { toast(e.message, "erro"); } finally { carregando(false); }
   };
 }
