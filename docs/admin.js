@@ -60,41 +60,60 @@ function abrirEscolha({ titulo, opcoes, comTodos = true, continuarNaGaveta = fal
 }
 
 // ------------------------------------------------------------
-// Filtros (Extrato e Pendentes usam o mesmo bloco)
+// Filtros (mesmo bloco em todas as telas; cada tela liga os campos que usa)
 // ------------------------------------------------------------
-function novoFiltro() {
+const FILTRO_CFG = {
+  extrato:    { cliente: true, missao: true, situacao: true },
+  pendentes:  { cliente: true, missao: true },
+  fechamento: { cliente: true, missao: true },
+  resumocli:  { todosPeriodos: true, cliente: true, missao: true },
+  resumoprod: { todosPeriodos: true, produto: true },
+};
+function novoFiltro(tela) {
   const hoje = hojeISO();
-  return { modo: "periodo", ini: somarDias(hoje, -30), fim: hoje, dia: hoje, cliente: "", missao: "", situacao: "todos" };
+  return {
+    modo: FILTRO_CFG[tela].todosPeriodos ? "todos" : "periodo",
+    ini: somarDias(hoje, -30), fim: hoje, dia: hoje,
+    cliente: "", missao: "", produto: "", situacao: "todos",
+  };
 }
-const filtros = { extrato: novoFiltro(), pendentes: novoFiltro() };
-const periodoDe = (f) => (f.modo === "dia" ? [f.dia, f.dia] : [f.ini, f.fim]);
+const filtros = Object.fromEntries(Object.keys(FILTRO_CFG).map((t) => [t, novoFiltro(t)]));
+// [ini, fim]; null, null = todos os períodos
+const periodoDe = (f) => (f.modo === "todos" ? [null, null] : f.modo === "dia" ? [f.dia, f.dia] : [f.ini, f.fim]);
+
+const ROTULO_FILTRO = {
+  cliente: ["Cliente", "Todos", "Filtrar por cliente", "clientes"],
+  missao:  ["Missão", "Todas", "Filtrar por missão", "missoes"],
+  produto: ["Produto", "Todos", "Filtrar por produto", "produtos"],
+};
+function seletorFiltro(f, campo) {
+  const [rot, vazio] = ROTULO_FILTRO[campo];
+  return `<button class="seletor seletor-fino" data-escolher="${campo}">
+    <span class="seletor-rotulo">${rot}</span>
+    <span class="seletor-valor ${f[campo] ? "" : "vazio"}">${esc(f[campo] || vazio)}</span>
+    ${f[campo] ? `<span class="limpar-filtro" data-limpar="${campo}" aria-label="Limpar">✕</span>` : `<span class="seta">›</span>`}
+  </button>`;
+}
 
 function montarFiltros(tela, aoMudar) {
   const f = filtros[tela];
+  const cfg = FILTRO_CFG[tela];
   const el = $(`#filtros-${tela}`);
+  const modos = (cfg.todosPeriodos ? [["todos", "Tudo"]] : []).concat([["periodo", "Período"], ["dia", "Dia único"]]);
   el.innerHTML = `
     <div class="cartao filtros">
-      <div class="segmentos seg-2" data-campo="modo">
-        <button data-v="periodo" class="${f.modo === "periodo" ? "sel" : ""}">Período</button>
-        <button data-v="dia" class="${f.modo === "dia" ? "sel" : ""}">Dia único</button>
+      <div class="segmentos ${modos.length === 2 ? "seg-2" : ""}" data-campo="modo">
+        ${modos.map(([v, r]) => `<button data-v="${v}" class="${f.modo === v ? "sel" : ""}">${r}</button>`).join("")}
       </div>
-      ${f.modo === "dia"
+      ${f.modo === "todos" ? `<p class="dica" style="margin-top:-6px">Considera todos os lançamentos, de todos os períodos.</p>`
+        : f.modo === "dia"
         ? `<label class="campo"><span>Dia</span><input type="date" data-campo="dia" value="${f.dia}"></label>`
         : `<div class="linha-2">
              <label class="campo"><span>De</span><input type="date" data-campo="ini" value="${f.ini}"></label>
              <label class="campo"><span>Até</span><input type="date" data-campo="fim" value="${f.fim}"></label>
            </div>`}
-      <button class="seletor seletor-fino" data-escolher="cliente">
-        <span class="seletor-rotulo">Cliente</span>
-        <span class="seletor-valor ${f.cliente ? "" : "vazio"}">${esc(f.cliente || "Todos")}</span>
-        ${f.cliente ? `<span class="limpar-filtro" data-limpar="cliente" aria-label="Limpar">✕</span>` : `<span class="seta">›</span>`}
-      </button>
-      <button class="seletor seletor-fino" data-escolher="missao">
-        <span class="seletor-rotulo">Missão</span>
-        <span class="seletor-valor ${f.missao ? "" : "vazio"}">${esc(f.missao || "Todas")}</span>
-        ${f.missao ? `<span class="limpar-filtro" data-limpar="missao" aria-label="Limpar">✕</span>` : `<span class="seta">›</span>`}
-      </button>
-      ${tela === "extrato" ? `
+      ${["cliente", "missao", "produto"].filter((c) => cfg[c]).map((c) => seletorFiltro(f, c)).join("")}
+      ${cfg.situacao ? `
       <div class="segmentos" data-campo="situacao" style="margin-bottom:0">
         <button data-v="todos" class="${f.situacao === "todos" ? "sel" : ""}">Todos</button>
         <button data-v="pendentes" class="${f.situacao === "pendentes" ? "sel" : ""}">Pendentes</button>
@@ -127,12 +146,23 @@ function montarFiltros(tela, aoMudar) {
       return aoMudar();
     }
     try { await carregarListasAdmin(); } catch (err) { return toast(err.message, "erro"); }
+    const [, , titulo, lista] = ROTULO_FILTRO[campo];
     abrirEscolha({
-      titulo: campo === "cliente" ? "Filtrar por cliente" : "Filtrar por missão",
-      opcoes: campo === "cliente" ? listasAdmin.clientes : listasAdmin.missoes,
+      titulo, opcoes: listasAdmin[lista] || [],
       aoEscolher: (v) => { f[campo] = v; montarFiltros(tela, aoMudar); aoMudar(); },
     });
   }));
+}
+
+// texto do período/filtros (vai na tela e no PDF)
+function legendaFiltros(tela) {
+  const f = filtros[tela];
+  let t = f.modo === "todos" ? "Todos os períodos"
+    : f.modo === "dia" ? `Dia: ${fmtData(f.dia)}` : `Período: ${fmtData(f.ini)} a ${fmtData(f.fim)}`;
+  if (f.missao) t += `  •  Missão: ${f.missao}`;
+  if (f.cliente) t += `  •  Cliente: ${f.cliente}`;
+  if (f.produto) t += `  •  Produto: ${f.produto}`;
+  return t;
 }
 
 async function buscarExtrato(tela) {
@@ -234,6 +264,7 @@ function abrirPedido(p, origem) {
 function recarregarOrigem(origem) {
   if (origem === "extrato") return carregarExtrato();
   if (origem === "pendentes") return carregarPendentes();
+  if (origem === "resumocli") return carregarResumoCli();
 }
 
 async function abrirEditarPedido(p, origem) {

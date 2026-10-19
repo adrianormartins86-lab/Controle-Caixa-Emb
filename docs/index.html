@@ -10,7 +10,7 @@
   <link rel="manifest" href="manifest.json">
   <link rel="icon" href="icons/icon-192.png">
   <link rel="apple-touch-icon" href="icons/icon-192.png">
-  <link rel="stylesheet" href="style.css?v=1.1.0">
+  <link rel="stylesheet" href="style.css?v=1.2.0">
 </head>
 <body>
   <!-- ===================== LOGIN ===================== -->
@@ -129,6 +129,12 @@
           <button data-ir="pendentes"><span class="mm-ic">💰</span><span class="mm-txt"><strong>Pgtos. pendentes</strong><small>Receber e liquidar por valor</small></span><span class="seta">›</span></button>
           <button data-ir="cobranca"><span class="mm-ic">📱</span><span class="mm-txt"><strong>Gerar cobrança</strong><small>Mensagem de WhatsApp com Pix</small></span><span class="seta">›</span></button>
         </div>
+        <h2 class="titulo-secao">Relatórios</h2>
+        <div class="menu-mais">
+          <button data-ir="fechamento"><span class="mm-ic">📑</span><span class="mm-txt"><strong>Fechamento</strong><small>Formas, produtos, missões, quem pagou e quem deve + PDF</small></span><span class="seta">›</span></button>
+          <button data-ir="resumocli"><span class="mm-ic">📊</span><span class="mm-txt"><strong>Resumo por cliente</strong><small>Total, pago e devendo de cada cliente</small></span><span class="seta">›</span></button>
+          <button data-ir="resumoprod"><span class="mm-ic">📦</span><span class="mm-txt"><strong>Resumo por produto</strong><small>Quanto vendeu de cada produto + PDF</small></span><span class="seta">›</span></button>
+        </div>
         <h2 class="titulo-secao">Cadastros</h2>
         <div class="menu-mais">
           <button data-ir="config"><span class="mm-ic">⚙️</span><span class="mm-txt"><strong>Configurações</strong><small>Produtos, missões e clientes</small></span><span class="seta">›</span></button>
@@ -145,6 +151,20 @@
       <section id="pg-pendentes" class="pagina" hidden>
         <div id="filtros-pendentes"></div>
         <div id="pendentes-conteudo"></div>
+      </section>
+
+      <!-- ---------- RELATÓRIOS (só admin) ---------- -->
+      <section id="pg-fechamento" class="pagina" hidden>
+        <div id="filtros-fechamento"></div>
+        <div id="fechamento-conteudo"></div>
+      </section>
+      <section id="pg-resumocli" class="pagina" hidden>
+        <div id="filtros-resumocli"></div>
+        <div id="resumocli-conteudo"></div>
+      </section>
+      <section id="pg-resumoprod" class="pagina" hidden>
+        <div id="filtros-resumoprod"></div>
+        <div id="resumoprod-conteudo"></div>
       </section>
 
       <!-- ---------- GERAR COBRANÇA (só admin) ---------- -->
@@ -184,7 +204,8 @@
   <div id="carregando" class="carregando" hidden><div class="spinner"></div></div>
 
   <script src="config.js"></script>
-  <script src="app.js?v=1.1.0"></script>
-  <script src="admin.js?v=1.1.0"></script>
+  <script src="app.js?v=1.2.0"></script>
+  <script src="admin.js?v=1.2.0"></script>
+  <script src="relatorios.js?v=1.2.0"></script>
 </body>
 </html>

@@ -180,10 +180,11 @@ async function recarregarCadastros() {
 const TITULOS = {
   lancar: "Novo pedido", comandas: "Comandas abertas", hoje: "Resumo do dia", mais: "Mais opções",
   config: "Configurações", extrato: "Extrato", pendentes: "Pagamentos pendentes", cobranca: "Gerar cobrança",
+  fechamento: "Fechamento", resumocli: "Resumo por cliente", resumoprod: "Resumo por produto",
 };
 const PAGINAS = Object.keys(TITULOS);
 // telas que ficam dentro do "Mais" (só administrador)
-const SUB_MAIS = ["config", "extrato", "pendentes", "cobranca"];
+const SUB_MAIS = ["config", "extrato", "pendentes", "cobranca", "fechamento", "resumocli", "resumoprod"];
 function irPara(pg) {
   if ((pg === "mais" || SUB_MAIS.includes(pg)) && !dados.admin) pg = "lancar";
   pagina = pg;
@@ -193,6 +194,9 @@ function irPara(pg) {
   if (pg === "extrato") carregarExtrato();
   if (pg === "pendentes") carregarPendentes();
   if (pg === "cobranca") carregarCobranca();
+  if (pg === "fechamento") carregarFechamento();
+  if (pg === "resumocli") carregarResumoCli();
+  if (pg === "resumoprod") carregarResumoProd();
   const abaAtiva = sub ? "mais" : pg;
   document.querySelectorAll(".aba").forEach((b) => b.classList.toggle("ativa", b.dataset.pg === abaAtiva));
   $("#topo-titulo").textContent = TITULOS[pg];

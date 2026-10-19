@@ -358,3 +358,14 @@ input, select { font: inherit; }
 .btn-whats:active { background: #178A45; }
 .linha-2 > * { min-width: 0; }
 .campo input[type=date] { min-width: 0; max-width: 100%; }
+
+/* ---------- relatórios (fase 2) ---------- */
+.bloco-rel { padding-bottom: 10px; }
+.bloco-rel .formas li { padding: 7px 0; }
+.qtd-mini { color: var(--texto-suave); font-size: .78rem; font-weight: 600; }
+.rodape-rel { border-top: 2px solid var(--borda); margin-top: 4px; padding-top: 8px; text-align: right; font-size: .9rem; color: var(--azul-escuro); }
+.rodape-rel small { color: var(--texto-suave); }
+.linha-prod { cursor: default; }
+.lp-dir { display: flex; flex-direction: column; align-items: flex-end; gap: 3px; white-space: nowrap; }
+.lp-dir strong { color: var(--azul-escuro); }
+a.btn { text-decoration: none; }

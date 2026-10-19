@@ -12,12 +12,15 @@ que é lançado aqui aparece lá na hora, e vice-versa.
 | `style.css` | Visual (cores Molicenter, layout de celular) |
 | `app.js` | A lógica: chama o banco, monta as listas, carrinho, pagamento |
 | `admin.js` | Telas do menu **Mais** (só Administrador e Meiry): Extrato, Pgtos. pendentes, Gerar cobrança |
+| `relatorios.js` | Fechamento, Resumo por cliente e Resumo por produto, e os PDFs |
+| `vendor/` | Biblioteca de PDF (jsPDF + AutoTable, licença MIT) — não precisa mexer |
 | `config.js` | Endereço do Supabase e a chave **pública** |
 | `manifest.json` | Nome, ícone e cores do app instalado |
 | `sw.js` | Service worker: permite instalar e abrir com internet ruim |
 | `icons/` | Ícones e logo |
 | `../sql_mobile/01_funcoes_mobile.sql` (fora do docs, não é publicado) | Funções do banco que o app usa (já aplicado no projeto Diversos) |
 | `../sql_mobile/02_funcoes_fase1.sql` | Funções do Extrato, Pendentes e Cobrança (já aplicado no projeto Diversos) |
+| `../sql_mobile/03_funcoes_fase2.sql` | Funções do Fechamento e dos Resumos (já aplicado no projeto Diversos) |
 
 ## Segurança
 
