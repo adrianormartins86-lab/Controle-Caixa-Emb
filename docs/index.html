@@ -10,7 +10,7 @@
   <link rel="manifest" href="manifest.json">
   <link rel="icon" href="icons/icon-192.png">
   <link rel="apple-touch-icon" href="icons/icon-192.png">
-  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="style.css?v=1.1.0">
 </head>
 <body>
   <!-- ===================== LOGIN ===================== -->
@@ -39,7 +39,8 @@
   <!-- ===================== APP ===================== -->
   <div id="app" hidden>
     <header class="topo">
-      <img src="icons/logo.png" alt="" class="topo-logo">
+      <button id="btn-voltar" class="btn-voltar" aria-label="Voltar" hidden>‹</button>
+      <img src="icons/logo.png" alt="" class="topo-logo" id="topo-logo">
       <div class="topo-titulo">
         <strong id="topo-titulo">Novo pedido</strong>
         <small id="topo-usuario"></small>
@@ -117,7 +118,40 @@
         <div class="busca-wrap"><input id="cfg-busca" type="search" placeholder="Buscar..." autocomplete="off" enterkeyhint="search"></div>
         <button id="cfg-novo" class="btn btn-primario btn-bloco" style="margin-top:10px">➕ Novo produto</button>
         <div id="cfg-lista" class="cfg-lista"></div>
-        <p class="dica">Usuários, chave Pix, cobrança e PDF continuam no sistema pelo navegador.</p>
+        <p class="dica">Usuários e chave Pix ainda ficam no sistema do navegador (próxima etapa da migração).</p>
+      </section>
+
+      <!-- ---------- MAIS (só admin) ---------- -->
+      <section id="pg-mais" class="pagina" hidden>
+        <h2 class="titulo-secao" style="margin-top:4px">Financeiro</h2>
+        <div class="menu-mais">
+          <button data-ir="extrato"><span class="mm-ic">📋</span><span class="mm-txt"><strong>Extrato</strong><small>Pedidos do período, editar e excluir</small></span><span class="seta">›</span></button>
+          <button data-ir="pendentes"><span class="mm-ic">💰</span><span class="mm-txt"><strong>Pgtos. pendentes</strong><small>Receber e liquidar por valor</small></span><span class="seta">›</span></button>
+          <button data-ir="cobranca"><span class="mm-ic">📱</span><span class="mm-txt"><strong>Gerar cobrança</strong><small>Mensagem de WhatsApp com Pix</small></span><span class="seta">›</span></button>
+        </div>
+        <h2 class="titulo-secao">Cadastros</h2>
+        <div class="menu-mais">
+          <button data-ir="config"><span class="mm-ic">⚙️</span><span class="mm-txt"><strong>Configurações</strong><small>Produtos, missões e clientes</small></span><span class="seta">›</span></button>
+        </div>
+      </section>
+
+      <!-- ---------- EXTRATO (só admin) ---------- -->
+      <section id="pg-extrato" class="pagina" hidden>
+        <div id="filtros-extrato"></div>
+        <div id="extrato-conteudo"></div>
+      </section>
+
+      <!-- ---------- PAGAMENTOS PENDENTES (só admin) ---------- -->
+      <section id="pg-pendentes" class="pagina" hidden>
+        <div id="filtros-pendentes"></div>
+        <div id="pendentes-conteudo"></div>
+      </section>
+
+      <!-- ---------- GERAR COBRANÇA (só admin) ---------- -->
+      <section id="pg-cobranca" class="pagina" hidden>
+        <p class="dica" style="margin-top:0">Pendências de todos os dias. Toque no cliente para montar a mensagem.</p>
+        <div class="busca-wrap"><input id="cob-busca" type="search" placeholder="Buscar cliente..." autocomplete="off" enterkeyhint="search"></div>
+        <div id="cobranca-conteudo"></div>
       </section>
     </main>
 
@@ -135,7 +169,7 @@
       <button data-pg="lancar" class="aba ativa"><span class="aba-ic">🧾</span>Lançar</button>
       <button data-pg="comandas" class="aba"><span class="aba-ic">🗂️</span>Comandas<b id="badge-comandas" class="badge" hidden></b></button>
       <button data-pg="hoje" class="aba"><span class="aba-ic">📊</span>Hoje</button>
-      <button data-pg="config" class="aba" id="aba-config" hidden><span class="aba-ic">⚙️</span>Config.</button>
+      <button data-pg="mais" class="aba" id="aba-mais" hidden><span class="aba-ic">☰</span>Mais</button>
     </nav>
   </div>
 
@@ -150,6 +184,7 @@
   <div id="carregando" class="carregando" hidden><div class="spinner"></div></div>
 
   <script src="config.js"></script>
-  <script src="app.js"></script>
+  <script src="app.js?v=1.1.0"></script>
+  <script src="admin.js?v=1.1.0"></script>
 </body>
 </html>

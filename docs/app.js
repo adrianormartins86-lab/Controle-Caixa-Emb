@@ -155,7 +155,7 @@ async function iniciarApp() {
   $("#tela-login").hidden = true;
   $("#app").hidden = false;
   $("#topo-usuario").textContent = `${dados.usuario}${dados.admin ? " · administrador" : ""}`;
-  $("#aba-config").hidden = !dados.admin;
+  $("#aba-mais").hidden = !dados.admin;
 
   $("#lanc-missao").innerHTML = `<option value="">Escolha...</option>` +
     dados.missoes.map((m) => `<option>${esc(m)}</option>`).join("");
@@ -177,14 +177,27 @@ async function recarregarCadastros() {
 // ============================================================
 // Navegação
 // ============================================================
-const TITULOS = { lancar: "Novo pedido", comandas: "Comandas abertas", hoje: "Resumo do dia", config: "Configurações" };
+const TITULOS = {
+  lancar: "Novo pedido", comandas: "Comandas abertas", hoje: "Resumo do dia", mais: "Mais opções",
+  config: "Configurações", extrato: "Extrato", pendentes: "Pagamentos pendentes", cobranca: "Gerar cobrança",
+};
+const PAGINAS = Object.keys(TITULOS);
+// telas que ficam dentro do "Mais" (só administrador)
+const SUB_MAIS = ["config", "extrato", "pendentes", "cobranca"];
 function irPara(pg) {
-  if (pg === "config" && !dados.admin) pg = "lancar";
+  if ((pg === "mais" || SUB_MAIS.includes(pg)) && !dados.admin) pg = "lancar";
   pagina = pg;
-  for (const p of ["lancar", "comandas", "hoje", "config"]) $(`#pg-${p}`).hidden = p !== pg;
+  for (const p of PAGINAS) $(`#pg-${p}`).hidden = p !== pg;
+  const sub = SUB_MAIS.includes(pg);
   if (pg === "config") carregarConfig();
-  document.querySelectorAll(".aba").forEach((b) => b.classList.toggle("ativa", b.dataset.pg === pg));
+  if (pg === "extrato") carregarExtrato();
+  if (pg === "pendentes") carregarPendentes();
+  if (pg === "cobranca") carregarCobranca();
+  const abaAtiva = sub ? "mais" : pg;
+  document.querySelectorAll(".aba").forEach((b) => b.classList.toggle("ativa", b.dataset.pg === abaAtiva));
   $("#topo-titulo").textContent = TITULOS[pg];
+  $("#btn-voltar").hidden = !sub;
+  $("#topo-logo").hidden = sub;
   window.scrollTo({ top: 0 });
   if (pg === "lancar") renderLancar();
   if (pg === "comandas") { renderComandas(); atualizarComandas().then(renderComandas); }

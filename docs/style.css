@@ -295,3 +295,66 @@ input, select { font: inherit; }
 .carregando { position: fixed; inset: 0; z-index: 80; background: rgba(255,255,255,.55); display: flex; align-items: center; justify-content: center; }
 .spinner { width: 42px; height: 42px; border-radius: 50%; border: 4px solid var(--azul-claro); border-top-color: var(--magenta); animation: girar .8s linear infinite; }
 @keyframes girar { to { transform: rotate(360deg); } }
+
+/* ============================================================
+   Telas de administração (Mais, Extrato, Pendentes, Cobrança)
+   ============================================================ */
+.btn-voltar {
+  background: rgba(255,255,255,.14); border: 0; color: #fff; border-radius: 10px;
+  width: 40px; height: 40px; font-size: 1.7rem; line-height: 1; padding: 0 0 3px;
+}
+.menu-mais { background: var(--branco); border-radius: var(--raio); box-shadow: var(--sombra); overflow: hidden; }
+.menu-mais button {
+  width: 100%; border: 0; background: none; text-align: left; display: flex; align-items: center; gap: 12px;
+  padding: 14px; border-bottom: 1px solid var(--borda); min-height: 64px;
+}
+.menu-mais button:last-child { border-bottom: 0; }
+.menu-mais button:active { background: var(--azul-claro); }
+.mm-ic { font-size: 1.4rem; width: 40px; height: 40px; border-radius: 10px; background: var(--azul-claro); display: flex; align-items: center; justify-content: center; }
+.mm-txt { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.mm-txt strong { color: var(--azul-escuro); }
+.mm-txt small { color: var(--texto-suave); font-size: .8rem; }
+
+.filtros .segmentos { margin-bottom: 12px; }
+.segmentos.seg-2 { grid-template-columns: 1fr 1fr; }
+.seletor-fino { min-height: 50px; padding: 8px 12px; margin-bottom: 10px; }
+.seletor-fino .seletor-valor { font-size: .98rem; }
+.limpar-filtro {
+  width: 30px; height: 30px; border-radius: 15px; background: var(--azul-claro); color: var(--azul);
+  display: flex; align-items: center; justify-content: center; font-size: .85rem; font-weight: 700;
+}
+.kpis .kpi:nth-child(3):last-child { grid-column: auto; }
+
+.ped-btn { width: 100%; text-align: left; border: 0; display: block; }
+.ped-btn:active { background: var(--azul-claro); }
+.ped .item-obs { margin-top: 3px; }
+
+.info-ped { list-style: none; margin: -4px 0 12px; padding: 0; background: var(--fundo); border-radius: 12px; }
+.info-ped li { display: flex; justify-content: space-between; gap: 12px; padding: 8px 12px; border-bottom: 1px solid var(--borda); font-size: .9rem; }
+.info-ped li:last-child { border-bottom: 0; }
+.info-ped li span { color: var(--texto-suave); }
+.info-ped li strong { text-align: right; }
+.gaveta > #gaveta-conteudo > .btn-bloco { margin-bottom: 4px; }
+
+.aviso-perigo { background: #FDECEC; border-left: 4px solid var(--vermelho); border-radius: 10px; padding: 10px 12px; margin-bottom: 14px; font-size: .92rem; }
+.aviso-perigo small { color: var(--texto-suave); }
+.confirmacao { font-size: .95rem; }
+.confirmacao p { margin: 0 0 8px; }
+.confirmacao ul { margin: 0 0 8px; padding-left: 18px; color: var(--texto-suave); font-size: .88rem; }
+.confirmacao li { margin-bottom: 4px; }
+
+.liquidar { border-top: 4px solid var(--magenta); }
+.liquidar > strong { color: var(--azul-escuro); }
+.acoes-linha { display: flex; gap: 8px; }
+.acoes-linha .btn { flex: 1; font-size: .9rem; padding: 10px; }
+
+.sub-chave { display: block; font-weight: 400; color: var(--texto-suave); font-size: .78rem; }
+.campo textarea {
+  width: 100%; padding: 10px 12px; border: 1.5px solid var(--borda); border-radius: 12px; background: var(--branco);
+  color: var(--texto); font: inherit; font-size: 15px; line-height: 1.4; resize: vertical;
+}
+.campo textarea:focus { outline: none; border-color: var(--azul); box-shadow: 0 0 0 3px rgba(11,61,145,.12); }
+.btn-whats { background: #1FA855; color: #fff; text-decoration: none; }
+.btn-whats:active { background: #178A45; }
+.linha-2 > * { min-width: 0; }
+.campo input[type=date] { min-width: 0; max-width: 100%; }
