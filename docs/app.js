@@ -156,6 +156,7 @@ async function iniciarApp() {
   $("#app").hidden = false;
   $("#topo-usuario").textContent = `${dados.usuario}${dados.admin ? " · administrador" : ""}`;
   $("#aba-mais").hidden = !dados.admin;
+  $("#mm-usuarios").hidden = dados.perfil !== "admin";   // gestor não gerencia usuários
 
   $("#lanc-missao").innerHTML = `<option value="">Escolha...</option>` +
     dados.missoes.map((m) => `<option>${esc(m)}</option>`).join("");
@@ -181,10 +182,12 @@ const TITULOS = {
   lancar: "Novo pedido", comandas: "Comandas abertas", hoje: "Resumo do dia", mais: "Mais opções",
   config: "Configurações", extrato: "Extrato", pendentes: "Pagamentos pendentes", cobranca: "Gerar cobrança",
   fechamento: "Fechamento", resumocli: "Resumo por cliente", resumoprod: "Resumo por produto",
+  abatimentos: "Abatimento / Reembolso", despesas: "Despesas", pix: "Chave Pix", usuarios: "Usuários",
 };
 const PAGINAS = Object.keys(TITULOS);
 // telas que ficam dentro do "Mais" (só administrador)
-const SUB_MAIS = ["config", "extrato", "pendentes", "cobranca", "fechamento", "resumocli", "resumoprod"];
+const SUB_MAIS = ["config", "extrato", "pendentes", "cobranca", "fechamento", "resumocli", "resumoprod",
+                  "abatimentos", "despesas", "pix", "usuarios"];
 function irPara(pg) {
   if ((pg === "mais" || SUB_MAIS.includes(pg)) && !dados.admin) pg = "lancar";
   pagina = pg;
@@ -197,6 +200,10 @@ function irPara(pg) {
   if (pg === "fechamento") carregarFechamento();
   if (pg === "resumocli") carregarResumoCli();
   if (pg === "resumoprod") carregarResumoProd();
+  if (pg === "abatimentos") carregarAbatimentos();
+  if (pg === "despesas") carregarDespesas();
+  if (pg === "pix") carregarPix();
+  if (pg === "usuarios") carregarUsuarios();
   const abaAtiva = sub ? "mais" : pg;
   document.querySelectorAll(".aba").forEach((b) => b.classList.toggle("ativa", b.dataset.pg === abaAtiva));
   $("#topo-titulo").textContent = TITULOS[pg];

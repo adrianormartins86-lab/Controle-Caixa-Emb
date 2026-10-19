@@ -10,7 +10,7 @@
   <link rel="manifest" href="manifest.json">
   <link rel="icon" href="icons/icon-192.png">
   <link rel="apple-touch-icon" href="icons/icon-192.png">
-  <link rel="stylesheet" href="style.css?v=1.2.1">
+  <link rel="stylesheet" href="style.css?v=1.3.0">
 </head>
 <body>
   <!-- ===================== LOGIN ===================== -->
@@ -118,7 +118,6 @@
         <div class="busca-wrap"><input id="cfg-busca" type="search" placeholder="Buscar..." autocomplete="off" enterkeyhint="search"></div>
         <button id="cfg-novo" class="btn btn-primario btn-bloco" style="margin-top:10px">➕ Novo produto</button>
         <div id="cfg-lista" class="cfg-lista"></div>
-        <p class="dica">Usuários e chave Pix ainda ficam no sistema do navegador (próxima etapa da migração).</p>
       </section>
 
       <!-- ---------- MAIS (só admin) ---------- -->
@@ -128,6 +127,8 @@
           <button data-ir="extrato"><span class="mm-ic">📋</span><span class="mm-txt"><strong>Extrato</strong><small>Pedidos do período, editar e excluir</small></span><span class="seta">›</span></button>
           <button data-ir="pendentes"><span class="mm-ic">💰</span><span class="mm-txt"><strong>Pgtos. pendentes</strong><small>Receber e liquidar por valor</small></span><span class="seta">›</span></button>
           <button data-ir="cobranca"><span class="mm-ic">📱</span><span class="mm-txt"><strong>Gerar cobrança</strong><small>Mensagem de WhatsApp com Pix</small></span><span class="seta">›</span></button>
+          <button data-ir="abatimentos"><span class="mm-ic">🔄</span><span class="mm-txt"><strong>Abatimento / Reembolso</strong><small>Crédito direto no cliente, fora do caixa</small></span><span class="seta">›</span></button>
+          <button data-ir="despesas"><span class="mm-ic">💸</span><span class="mm-txt"><strong>Despesas</strong><small>Saídas de caixa: compras, contas...</small></span><span class="seta">›</span></button>
         </div>
         <h2 class="titulo-secao">Relatórios</h2>
         <div class="menu-mais">
@@ -138,6 +139,8 @@
         <h2 class="titulo-secao">Cadastros</h2>
         <div class="menu-mais">
           <button data-ir="config"><span class="mm-ic">⚙️</span><span class="mm-txt"><strong>Configurações</strong><small>Produtos, missões e clientes</small></span><span class="seta">›</span></button>
+          <button data-ir="pix"><span class="mm-ic">🔑</span><span class="mm-txt"><strong>Chave Pix</strong><small>Usada na mensagem de cobrança</small></span><span class="seta">›</span></button>
+          <button data-ir="usuarios" id="mm-usuarios" hidden><span class="mm-ic">👤</span><span class="mm-txt"><strong>Usuários</strong><small>Criar, inativar e resetar senha</small></span><span class="seta">›</span></button>
         </div>
       </section>
 
@@ -152,6 +155,12 @@
         <div id="filtros-pendentes"></div>
         <div id="pendentes-conteudo"></div>
       </section>
+
+      <!-- ---------- ABATIMENTO / DESPESAS / PIX / USUÁRIOS (só admin) ---------- -->
+      <section id="pg-abatimentos" class="pagina" hidden><div id="abatimentos-conteudo"></div></section>
+      <section id="pg-despesas" class="pagina" hidden><div id="despesas-conteudo"></div></section>
+      <section id="pg-pix" class="pagina" hidden><div id="pix-conteudo"></div></section>
+      <section id="pg-usuarios" class="pagina" hidden><div id="usuarios-conteudo"></div></section>
 
       <!-- ---------- RELATÓRIOS (só admin) ---------- -->
       <section id="pg-fechamento" class="pagina" hidden>
@@ -204,8 +213,9 @@
   <div id="carregando" class="carregando" hidden><div class="spinner"></div></div>
 
   <script src="config.js"></script>
-  <script src="app.js?v=1.2.1"></script>
-  <script src="admin.js?v=1.2.1"></script>
-  <script src="relatorios.js?v=1.2.1"></script>
+  <script src="app.js?v=1.3.0"></script>
+  <script src="admin.js?v=1.3.0"></script>
+  <script src="relatorios.js?v=1.3.0"></script>
+  <script src="cadastros.js?v=1.3.0"></script>
 </body>
 </html>

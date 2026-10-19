@@ -384,3 +384,15 @@ a.btn { text-decoration: none; }
 .data-br-mostra:disabled { background: #EEF1F6; color: var(--texto-suave); }
 .data-br-mostra .vazio { color: #9AA3B2; }
 .data-br-ic { font-size: 1rem; opacity: .75; }
+
+/* ---------- fase 3: despesas, pix ---------- */
+.linha-despesa { display: grid; grid-template-columns: 1fr 96px 40px; gap: 6px; margin-bottom: 8px; align-items: center; }
+.linha-despesa input {
+  min-width: 0; min-height: 46px; padding: 8px 10px; border: 1.5px solid var(--borda); border-radius: 12px;
+  background: var(--branco); color: var(--texto); font-size: 16px;
+}
+.linha-despesa input:focus { outline: none; border-color: var(--azul); }
+.linha-despesa .lixo-btn { border: 0; background: #FDECEC; color: var(--vermelho); border-radius: 10px; width: 40px; height: 40px; }
+.linha-despesa .lixo-btn:disabled { opacity: .35; }
+.previa-msg { white-space: pre-line; font-size: .9rem; color: var(--texto-suave); }
+#us-perfil button { text-transform: capitalize; }

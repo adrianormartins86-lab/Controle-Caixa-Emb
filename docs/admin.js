@@ -534,7 +534,7 @@ function renderCobranca() {
     <div class="cfg-lista" style="margin-top:6px">
       ${lista.map((d) => `
         <button class="cfg-item" data-dev="${esc(d.cliente)}">
-          <span>${esc(d.cliente)}<small>${d.telefone ? esc(d.telefone) : "📵 sem telefone"}</small></span>
+          <span>${esc(d.cliente)}<small>${d.telefone ? esc(d.telefone) : "📵 sem telefone"}${Number(d.abatido) > 0.001 ? ` · crédito de ${fmtMoeda(d.abatido)} já descontado` : ""}</small></span>
           <span class="preco" style="color:var(--laranja)">${fmtMoeda(d.total)}</span>
         </button>`).join("") || `<div class="vazio-msg">Nada encontrado.</div>`}
     </div>`;
@@ -555,7 +555,10 @@ function montarMensagemCobranca(d) {
     for (const it of g.itens) linhas.push(`${Math.round(Number(it.quantidade))} ${it.produto} ${dinheiroTxt(it.pendente)}`);
     if (g.itens.length > 1) linhas.push(`Total do dia: ${dinheiroTxt(g.itens.reduce((s, i) => s + Number(i.pendente), 0))}`);
   }
-  let fecho = `\n\nTotal em aberto: R$ ${dinheiroTxt(d.total)}`;
+  // abatimento/reembolso do cliente: mostra o subtotal e o desconto antes do total
+  let fecho = Number(d.abatido) > 0.001
+    ? `\n\nSubtotal: R$ ${dinheiroTxt(d.bruto)}\nAbatimento/crédito: - R$ ${dinheiroTxt(d.abatido)}\nTotal em aberto: R$ ${dinheiroTxt(d.total)}`
+    : `\n\nTotal em aberto: R$ ${dinheiroTxt(d.total)}`;
   if (cobranca.pix_chave) {
     fecho += `\n\nSe puder realizar o pix na chave ${cobranca.pix_chave}` +
       (cobranca.pix_nome ? ` (${cobranca.pix_nome})` : "") +
@@ -574,6 +577,7 @@ function abrirCobranca(d) {
   abrirGaveta(`
     <h3>Cobrança · ${esc(d.cliente)}</h3>
     <div class="total-gaveta"><span>Total em aberto</span><strong>${fmtMoeda(d.total)}</strong></div>
+    ${Number(d.abatido) > 0.001 ? `<p class="dica" style="margin-top:-8px">Consumo em aberto ${fmtMoeda(d.bruto)} − abatimento ${fmtMoeda(d.abatido)}</p>` : ""}
     <label class="campo"><span>Mensagem (pode editar antes de enviar)</span>
       <textarea id="cb-msg" rows="12"></textarea></label>
     ${d.telefone ? "" : `<p class="dica">📵 Cliente sem telefone. O WhatsApp vai abrir para você escolher o contato. Para ir direto, cadastre o telefone em Configurações › Clientes.</p>`}
